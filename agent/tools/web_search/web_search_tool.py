@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from ..web_search.authority import calculate_authority_score
 from ..web_search.freshness import calculate_freshness_score, extract_date_from_snippet
 from ..web_search.relevance import calculate_relevance_score
-
+from ..web_search.sensitive_filter import filter_sensitive_results, filter_blocked_domains
 
 class GetSearchSchema(BaseModel):
     query: str = Field(description="使用谷歌搜索获取最新信息。输入应为需要搜索的中文问题。")
@@ -37,7 +37,8 @@ def google_search(query: str, max_results: int = 30) -> list:
             "num": num_per_page,
             "start": start,
             "lr": "lang_zh",
-            "sort": "date"
+            "sort": "date",
+            "safe": "active"
         }
 
         response = requests.get(
@@ -67,10 +68,18 @@ def google_search(query: str, max_results: int = 30) -> list:
             "link": "",
             "snippet": "未查到与您的问题相关的网页信息。"
         })
-    print(refs)
+    refs = filter_sensitive_results(refs)
+    refs = filter_blocked_domains(refs)
+    if refs is None or len(refs) == 0:
+        refs.append({
+            "title": "无搜索结果",
+            "link": "",
+            "snippet": "未查到与您的问题相关的网页信息。"
+        })
     sorted = sort_search_results(refs, query)
     print("sorted:", sorted)
-    return sorted[:30]  # 返回前10条结果
+
+    return sorted
 
 google_search_tool = Tool(
     name="google_search",
