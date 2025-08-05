@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <script>
+    async function testStream() {
+      const resp = await fetch('http://localhost:8000/stream');
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const chunk = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          if (chunk.startsWith('data: ')) {
+            const msg = chunk.slice(6);
+            console.log('收到：', msg);
+          }
+        }
+      }
+    }
+    testStream();
+    </script>
+  </body>
+</html>

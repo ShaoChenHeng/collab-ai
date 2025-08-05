@@ -110,3 +110,4 @@ def sort_search_results(results, query):
     # 按总分降序排序
     sorted_results = sorted(results, key=lambda x: x['score'], reverse=True)
     return sorted_results
+print("hello")

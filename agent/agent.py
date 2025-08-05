@@ -102,11 +102,20 @@ def agent_respond_stream(user_input: str):
                     yield entry
             elif node == "chatbot":
                 bot_msg = value.get("messages", [])[-1]
-                entry = {
-                    "type": "chat",
-                    "role": getattr(bot_msg, "role", "assistant"),
-                    "content": getattr(bot_msg, "content", str(bot_msg))
-                }
+                content = getattr(bot_msg, "content", str(bot_msg))
+                if content.startswith("thought:"):
+                    print("here!!!!")
+                    entry = {
+                        "type": "intermediate_step",
+                        "role": getattr(bot_msg, "role", "assistant"),
+                        "content": content
+                    }
+                else:
+                    entry = {
+                        "type": "chat",
+                        "role": getattr(bot_msg, "role", "assistant"),
+                        "content": getattr(bot_msg, "content", str(bot_msg))
+                    }
                 yield entry
 
 if __name__ == "__main__":
@@ -121,3 +130,9 @@ if __name__ == "__main__":
                 print(f'[CHATBOT] {entry["content"]}', flush=True)
             elif entry["type"] == "tool_result":
                 print(f'[TOOL: {entry["tool"]}] {entry["content"]}', flush=True)
+                if entry["type"] == "chat":
+                    print(f'[CHATBOT] {entry["content"]}', flush=True)
+            elif entry["type"] == "intermediate_step":
+                print(f'[THOUGHT] {entry["content"]}', flush=True)
+
+
