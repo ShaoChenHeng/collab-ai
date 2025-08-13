@@ -1,6 +1,7 @@
 import re
 import os
 import requests
+from urllib.parse import urlparse
 from langchain.tools import Tool
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -52,10 +53,14 @@ def google_search(query: str, max_results: int = 30) -> list:
         if not items:
             break
         for i, item in enumerate(items, 1):
+            link = item.get("link", "")
+            domain = urlparse(link).netloc
+            favicon = f"https://www.google.com/s2/favicons?domain={domain}"
             refs.append({
                 "title": item.get("title", ""),
-                "link": item.get("link", ""),
-                "snippet": item.get("snippet", "")
+                "link": link,
+                "snippet": item.get("snippet", ""),
+                "favicon": favicon
             })
             if len(refs) >= max_results:
                 break
