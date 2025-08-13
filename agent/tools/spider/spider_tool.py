@@ -40,7 +40,11 @@ def fetch_webpage_text(url):
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; SimpleBot/1.0)"
     }
-    resp = requests.get(url, headers=headers, timeout=15)
+    proxies = {
+        "http": "http://127.0.0.1:7897",
+        "https": "http://127.0.0.1:7897",
+    }
+    resp = requests.get(url, headers=headers, timeout=15, proxies=proxies)
     resp.encoding = resp.apparent_encoding
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -75,6 +79,7 @@ def url_summary(url):
     try:
         text = fetch_webpage_text(url)
         summary = simple_summary(text)
+        print(summary)
         return clean_text(summary)
     except Exception as e:
         return f"无法获取摘要：{str(e)}"
