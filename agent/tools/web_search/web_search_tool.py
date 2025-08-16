@@ -82,7 +82,7 @@ def google_search(query: str, max_results: int = 30) -> list:
             "snippet": "未查到与您的问题相关的网页信息。"
         })
     sorted = sort_search_results(refs, query)
-    print("sorted:", sorted)
+    # print("sorted:", sorted)
 
     return sorted
 
