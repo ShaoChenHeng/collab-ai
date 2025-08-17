@@ -35,8 +35,41 @@ def clean_text(text):
         filtered_lines.append(line)
     return '\n'.join(filtered_lines)
 
+# 提取发布日期的函数
+def extract_pub_date(soup, text):
+    # 先从meta和常见标签找
+    # 1. meta tag
+    meta_names = ["pubdate", "publishdate", "published_time", "date", "created", "article:published_time", "article:published"]
+    for meta in soup.find_all("meta"):
+        meta_name = meta.get("name", "").lower() or meta.get("property", "").lower()
+        if meta_name in meta_names:
+            date_content = meta.get("content", "")
+            if date_content and re.search(r"\d{4}[-年./]\d{1,2}[-月./]\d{1,2}", date_content):
+                return date_content
+
+    # 2. <time>标签
+    for t in soup.find_all("time"):
+        tstr = t.get("datetime", "") or t.text
+        if re.search(r"\d{4}[-年./]\d{1,2}[-月./]\d{1,2}", tstr):
+            return tstr
+
+    # 3. 常见class/id
+    date_classes = ["pubtime", "publish-time", "date", "time", "article-date", "article-time"]
+    for cls in date_classes:
+        for tag in soup.find_all(attrs={"class": re.compile(cls)}):
+            if tag.text and re.search(r"\d{4}[-年./]\d{1,2}[-月./]\d{1,2}", tag.text):
+                return tag.text
+        for tag in soup.find_all(attrs={"id": re.compile(cls)}):
+            if tag.text and re.search(r"\d{4}[-年./]\d{1,2}[-月./]\d{1,2}", tag.text):
+                return tag.text
+
+    # 4. 正文文本查找日期
+    match = re.search(r"(20\d{2}[-年./]\d{1,2}[-月./]\d{1,2}(?: \d{2}:\d{2})?)", text)
+    if match:
+        return match.group(1)
+    return ""
+
 def fetch_webpage_text(url):
-    """抓取并提取网页正文文本"""
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; SimpleBot/1.0)"
     }
@@ -47,17 +80,13 @@ def fetch_webpage_text(url):
     resp = requests.get(url, headers=headers, timeout=15, proxies=proxies)
     resp.encoding = resp.apparent_encoding
     soup = BeautifulSoup(resp.text, "html.parser")
-
-    # 移除无用标签
     for tag in soup(["script", "style", "noscript", "header", "footer", "form", "nav", "aside"]):
         tag.decompose()
-
-    # 提取正文
     text = soup.get_text(separator="\n")
-    # 清理多余空格和换行
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     body_text = "\n".join(lines)
-    return body_text
+    pub_date = extract_pub_date(soup, body_text)
+    return body_text, pub_date
 
 def simple_summary(text, max_sentences=10):
     """返回文本前max_sentences个句子作为摘要"""
@@ -77,9 +106,12 @@ def url_summary(url):
     调用本工具获取详细内容，否则你的回答会不完整。
     """
     try:
-        text = fetch_webpage_text(url)
+        text, pub_date = fetch_webpage_text(url)
         summary = simple_summary(text)
-        print(summary)
-        return clean_text(summary)
+        cleaned = clean_text(summary)
+        if pub_date:
+            return f"发布时间: {pub_date}\n{cleaned}"
+        else:
+            return cleaned
     except Exception as e:
         return f"无法获取摘要：{str(e)}"
