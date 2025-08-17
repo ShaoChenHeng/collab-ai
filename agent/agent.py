@@ -2,13 +2,19 @@ from langchain_core.messages import SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START
 from langchain_deepseek import ChatDeepSeek
-import os
+from langchain_core.messages import AIMessage
 from langgraph.graph import StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
 from agent.tools.date.date_tool import today_date
 from agent.tools.spider.spider_tool import url_summary
 from agent.tools.web_search.web_search_tool import google_search
+import os, json, uuid, re
+
+# url-summary 工具的重试次数
+global_tried_count = 0
+max_retry = 3
+tried_urls = []  # 记录已经尝试过但不满意的 google_search 结果索引
 
 tools = [today_date, google_search, url_summary]
 tool_node = ToolNode(tools)
@@ -38,10 +44,11 @@ sys_msg = SystemMessage(content=
 4. 关键词尽量短
 
 **网页摘要规则**\n
-1. 从搜索结果中筛选1-3个最相关链接进行url_summary进行更详细的搜索，这能够使回答更详细\n\n
-2. 如果url_summary返回的内容与用户问题不相关、无法获取摘要、网络问题、以及其他错误，重新选择一个链接再次调用url_summary。
-3. 在选取某个链接进行url_summary之前，检查snippet中的日期是否与用户问题中的时间概念一致（如“今天”、“明天”等），如果是实时信息，例如：'新闻'，'天气'，'股票'等，必须确保日期一致，否则需要重新选择链接。
-4. 结合从url_summary获取的摘要内容，回答用户问题。
+1. 在选取某个链接进行url_summary之前，检查snippet中的日期是否与用户问题中的**时间概念一致**（如“今天”、“明天”等），如果是实时信息，例如：'新闻'，'天气'，'股票'等，必须确保日期一致，否则需要重新选择链接。
+2. 一次只选择一个链接进行url_summary，避免同时调用多个链接\n
+3. 从搜索结果中筛选1-3个最相关链接进行url_summary进行更详细的搜索，这能够使回答更详细\n\n
+4. 如果url_summary返回的内容与用户问题不相关、无法获取摘要、网络问题、以及其他错误，重新选择一个链接再次调用url_summary。
+5. 结合从url_summary获取的摘要内容，回答用户问题。
 
 **用户指令规则**
 1. 如果用户问题包含类似‘使用网络搜索’的内容，必须使用 google_search 工具进行搜索。
@@ -65,63 +72,82 @@ def get_user_question(messages):
     return ""
 
 def get_url_summary(messages, tool_name="url_summary"):
+    """
+    逆序查找最近一次 url_summary 工具调用，
+    返回 (content, url)，如果未找到则返回 (None, None)
+    url 从 tool_call_id 对应的 dict 里的 'url' 字段获取
+    """
+    # 步骤1：找到最近一次 ToolMessage
+    content = None
     for msg in reversed(messages):
-        if hasattr(msg, "type") and msg.type == "tool":
-            if getattr(msg, "name", "") == "url_summary":
-                return msg.content
-    return None
+        if hasattr(msg, "type") and msg.type == "tool" and getattr(msg, "name", "") == tool_name:
+            content = getattr(msg, "content", None)
+            tool_call_id = getattr(msg, "tool_call_id", None)
+            break  # 找到就用，不再继续
+
+    if tool_call_id is None:
+        return None, None
+
+    url = None
+    target_tool_calls = None
+    for msg in reversed(messages):
+        if hasattr(msg, "tool_calls"):
+            tool_calls = msg.tool_calls
+        elif isinstance(msg, dict) and "tool_calls" in msg:
+            tool_calls = msg["tool_calls"]
+        else:
+            continue
+        # 检查里面有没有 id 匹配的
+        if any(tc.get("id") == tool_call_id for tc in tool_calls):
+            target_tool_calls = tool_calls
+            break
+    if not target_tool_calls:
+        return content, None, tool_call_id
+
+    # 第三步：在目标 tool_calls 列表中查找 id 匹配并返回 url
+    for item in target_tool_calls:
+        if item.get("id") == tool_call_id:
+            url = item.get("args", {}).get("url", None)
+            return content, url, tool_call_id
+
+    return content, None, tool_call_id
 
 def get_search_results(messages, tool_name="google_search"):
     for msg in reversed(messages):
         if hasattr(msg, "type") and msg.type == "tool":
             if getattr(msg, "name", "") == tool_name:
-                # 假设搜索结果在 msg.content 或 msg.result
-                # 你需要根据你的工具定义调整这一行
+                # content 可能是 str 或 list/dict
                 if hasattr(msg, "content"):
-                    return msg.content  # content里应该是URL列表或者dict
+                    result = msg.content
                 elif hasattr(msg, "result"):
-                    return msg.result
+                    result = msg.result
+                else:
+                    result = []
+                # 如果是字符串，尝试解析 JSON
+                if isinstance(result, str):
+                    try:
+                        result = json.loads(result)
+                        print("[get_search_results] 已解析为对象:", type(result))
+                    except Exception as e:
+                        print("[get_search_results] json.loads失败:", e)
+                        result = []
+                return result
     return []
 
-def is_error_content(summary: str):
-    """
-    检查网页摘要是否包含错误信息。
-    返回：(is_error: bool, error_type: str, error_detail: str)
-    """
-    error_patterns = [
-        # 错误类型, 关键词（可复用正则或简单字符串包含）
-        ("ssl_error", ["SSL", "SSLError", "ssl error", "certificate", "UNEXPECTED_EOF_WHILE_READING"]),
-        ("connection_error", ["无法连接", "连接失败", "network unreachable", "timed out", "timeout", "连接超时"]),
-        ("not_found", ["404", "页面不存在", "not found"]),
-        ("server_error", ["502", "503", "504", "服务器错误"]),
-        ("empty_content", ["无内容", "empty response", "blank page", "content is empty"]),
-        ("access_denied", ["403", "访问受限", "拒绝访问", "需要登录", "robot check", "验证码"]),
-        ("tool_extract_error", ["无法获取摘要", "未能获取", "提取失败", "解析失败"]),
-        ("unknown_error", ["未知错误", "error", "请求失败"]),
-    ]
-    if not summary or not summary.strip():
-        return True, "empty_content", "内容为空"
-    summary_lower = summary.lower()
-    for err_type, keywords in error_patterns:
-        for kw in keywords:
-            if kw.lower() in summary_lower:
-                return True, err_type, kw
-    return False, "", ""
-
-def llm_judge_content(user_question: str, summary: str, llm_instance=None) -> (bool, str):
+def llm_judge_content(user_question: str, summary: str, date: str, llm_instance=None) -> (bool, str):
     """
     用 LLM 判断 summary 是否能回答 user_question。
     返回 (True/False, 理由: str)
     """
     prompt = f"""
-    用户问题：{user_question}
-    网页摘要内容：{summary}
-    请判断网页摘要内容是否对回答用户问题有参考价值？只要内容有部分帮助或相关信息，也可认为有参考价值。
-    只需回答“是”或“否”，并在“否”后补充原因（20字左右）。
-    例如：“否”+你的原因 或 “是，摘要和用户问题匹配度高”。"""
+    用户问题：{user_question} \n
+    网页摘要内容：{summary}    \n
+    {"当前日期：" + date if date else ""} \n
+    请判断网页摘要内容是否对回答用户问题有参考价值？只要内容有部分帮助或相关信息，也可认为有参考价值。\n
+    如果用户问题需要实时信息（如天气、新闻、股市等），请额外检查摘要内容中的日期是否与当前日期相近（3天内）。如果日期太遥远就不选。\n
+    只需回答“是”或“否”，并在“否”后补充原因（20字左右）。\n
+    例如：“否”+你的原因 或 “是"+你的原因。\n"""
 
-    if llm_instance is None:
-        llm_instance = llm
     if llm_instance is None:
         raise ValueError("没有可用的llm实例")
     llm_response = llm_instance.invoke(prompt)
@@ -140,55 +166,81 @@ def llm_judge_content(user_question: str, summary: str, llm_instance=None) -> (b
     # 兜底
     return False, f"LLM返回无法解析：{llm_response_text}"
 
-def llm_select_next_url(user_question, search_results, tried_urls, llm_instance=None):
+def llm_select_next_url(user_question, search_results, tried_urls, date, llm_instance=None):
     """
-    用 LLM 从未尝试过的 search_results 中选择最相关的链接。
-    返回 url 或 None
+    用 LLM 从 search_results 中选出最合适的链接编号（索引）。
+    不允许选择 tried_urls 里的链接。
+    返回选中的索引（int），如果都不合适返回 -1。
+    自动兜底：如果 LLM 选了已尝试过的，则选分数最高的未尝试项（如果有）。
     """
-    candidates = [r for r in search_results if (r.get("url") if isinstance(r, dict) else r) not in tried_urls]
-    if not candidates:
-        return None
-    # 展示编号和摘要，便于 LLM 选择
-    links_text = "\n".join([
-        f"编号{i+1}：{c.get('title','')} ({c.get('url', c)})\n摘要：{c.get('snippet','') if isinstance(c, dict) else ''}"
-        for i, c in enumerate(candidates)
-    ])
-    prompt = f"""
-    用户问题：{user_question}
-    以下是搜索到的网页链接：
-    {links_text}
-    请从中选出一个最有可能能回答用户问题的编号（只回答编号数字）。如果都不相关，回答0。"""
-    if llm_instance is None:
-        llm_instance = llm
-    llm_response = llm_instance.invoke(prompt)
-    response_text = getattr(llm_response, "content", str(llm_response)).strip()
-    try:
-        idx = int(response_text)
-        if idx == 0 or idx > len(candidates):
-            return None
-        link = candidates[idx - 1]
-        return link.get("url") if isinstance(link, dict) else link
-    except Exception:
-        return None
+    # 生成 prompt
+    prompt = (
+        "1. 已尝试过的链接不选，选择最可能回答用户问题的编号（index），只回复数字编号。\n"
+        "2. 如果是实时类问题（新闻、天气、股票），那么snippet中的应该和当前日期相近。\n"
+        "3. snippet、title、score都是你的评价指标，尽量选择和问题相关的链接。如果所有都不合适请回复-1。\n"
+    )
+    prompt += f"用户问题：{user_question}\n"
+    prompt += f"当前日期：{date}\n"
+    prompt += f"以下是已经尝试过的链接：{tried_urls}\n"
+    prompt += f"以下是搜索到的网页链接列表：{search_results}\n"
 
-def judge_content(user_question: str, summary: str, llm_instance=None) -> (bool, str):
+    if llm_instance is None:
+        raise ValueError("必须传入 llm_instance")
+
+    # 调用 LLM
+    llm_response = llm_instance.invoke(prompt)
+    llm_response_text = getattr(llm_response, "content", str(llm_response)).strip()
+    print(f"LLM select_next_url response: {llm_response_text}\n")
+
+    # 提取编号（支持“1号”或“选1”等情况），只取第一个数字
+    match = re.search(r"-?\d+", llm_response_text)
+    choose_index = int(match.group()) if match else -1
+
+    # 检查是否合规
+    invalid = (
+        choose_index < 0 or
+        choose_index >= len(search_results) or
+        search_results[choose_index].get("link") in tried_urls
+    )
+    if invalid:
+        print("LLM输出无效、超范围或选中了已尝试过的链接，自动兜底选分数最高的未尝试项")
+        # 自动兜底：选分数最高的未尝试项
+        untried = [(i, item) for i, item in enumerate(search_results) if item.get("link") not in tried_urls]
+        if not untried:
+            return -1
+        # 按分数降序排序，取第一个
+        untried.sort(key=lambda x: x[1].get("score", 0), reverse=True)
+        choose_index = untried[0][0]
+    return choose_index
+
+def remove_url_summary_by_id(messages, target_id):
+    """
+    删除 tool_call_id == target_id 的 ToolMessage 和 AIMessage
+    """
+    new_messages = []
+    for msg in messages:
+        # ToolMessage
+        if hasattr(msg, "tool_call_id") and getattr(msg, "tool_call_id", None) == target_id:
+            continue
+        # AIMessage 里 tool_calls
+        if hasattr(msg, "additional_kwargs") and "tool_calls" in msg.additional_kwargs:
+            # 如果 tool_calls 里有 id == target_id
+            if any(tc.get("id") == target_id for tc in msg.additional_kwargs["tool_calls"]):
+                continue
+        # 有些实现 tool_calls 直接是 msg.tool_calls
+        if hasattr(msg, "tool_calls"):
+            if any(tc.get("id") == target_id for tc in getattr(msg, "tool_calls", [])):
+                continue
+        new_messages.append(msg)
+    return new_messages
+
+def judge_content(user_question: str, summary: str, date: str, llm_instance=None) -> (bool, str):
     """
     判断 summary 是否能回答 user_question。
     返回 (is_satisfied: bool, reason: str)
     """
-    # 1. 错误检测
-    is_err, err_type, err_detail = is_error_content(summary)
-    if is_err:
-        reason = f"网页摘要错误类型: {err_type}，详情: {err_detail}"
-        print(f"judge_content: 摘要内容有错误，直接返回False, 原因: {reason}")
-        return False, reason
-
-    # 2. LLM 判断
-    result, llm_reason = llm_judge_content(user_question, summary, llm_instance)
-    if result:
-        reason = llm_reason or "内容可以回答用户问题"
-    else:
-        reason = llm_reason or "LLM判定该网页摘要内容无法回答用户问题"
+    result, llm_reason = llm_judge_content(user_question, summary, date, llm_instance)
+    reason = llm_reason or ("内容可以回答用户问题" if result else "LLM判定该网页摘要内容无法回答用户问题")
     print(f"judge_content: LLM判断结果为 {result}, 原因: {reason}")
     return result, reason
 
@@ -238,24 +290,73 @@ def chatbot(state: MessagesState):
     return {"messages": [llm.invoke([sys_msg] + state["messages"])]}
 
 def planning(state):
+    global global_tried_count, max_retry,tried_urls, llm
     messages = state["messages"]
-    print("search-results:", get_search_results(messages))
-    if should_judge(messages):
-        # 1. 用户问题
-        user_question = get_user_question(messages)
-        # 2. url_summary工具结果
-        url_summary_results = get_url_summary(messages)
-        # 3. google_search工具结果
-        # search_results = get_search_results(messages, "google_search")
+    #print(messages)
 
-        is_satisfied, reason = judge_content(user_question, url_summary_results)
+    if should_judge(messages):
+        user_question = get_user_question(messages)
+        url_summary_results, url, tool_call_id = get_url_summary(messages)
+        search_results = get_search_results(messages, "google_search")
+        today = today_date.invoke({})
+        is_satisfied, reason = judge_content(user_question, url_summary_results, today, llm)
+        print(f"[planning] judge_content结果: is_satisfied={is_satisfied}, reason={reason}")
+
         if is_satisfied:
+            print("[planning] 内容满足，进入chatbot节点")
             next_node = "chatbot"
+            global_tried_count = 0
+
         else:
-            # next_url = None
-            print("匹配不合适, 原因：", reason)
-            next_node = "chatbot"
-            pass
+            tried_urls.append(url)  # 记录已尝试过的链接
+            print("tried_urls:", tried_urls)
+            messages = remove_url_summary_by_id(messages, tool_call_id)
+            if global_tried_count >= max_retry:
+                print(f"[planning] 已达到最大重选次数({max_retry})，不再重选，进入chatbot")
+                global_tried_count = 0
+                tried_urls = []
+                next_node = "chatbot"
+            else:
+                # 直接选 google_search 结果中的第二个（索引1）
+                print("[planning] 匹配不合适，准备重选")
+
+                if search_results and len(search_results) > 0:
+                    choose_index = llm_select_next_url(user_question, search_results, today, tried_urls, llm)
+                    if choose_index == -1:
+                        print("[planning] LLM判定没有合适链接，进入chatbot")
+                        global_tried_count = 0
+                        tried_urls = []
+                        next_node = "chatbot"
+                    else:
+                        next_url = search_results[choose_index].get("link")
+                        print(f"[planning] LLM选择第{choose_index}个google_search结果: {next_url}")
+                        tool_call_id = f"call_{uuid.uuid4()}"
+                        messages.append(
+                            AIMessage(
+                                content='',
+                                additional_kwargs={
+                                    "tool_calls": [
+                                        {
+                                            "id": tool_call_id,
+                                            "function": {
+                                                "name": "url_summary",
+                                                "arguments": f'{{"url": "{next_url}"}}'
+                                            },
+                                            "type": "function",
+                                            "index": 0,
+                                        }
+                                    ],
+                                    "refusal": None
+                                }
+                            )
+                        )
+                        global_tried_count  = global_tried_count + 1
+                        next_node = "tools"
+                else:
+                    print("[planning] google_search结果不足，无法重试，进入chatbot")
+                    global_tried_count = 0
+                    tried_urls = []
+                    next_node = "chatbot"
     else:
         next_node = "chatbot"
 
