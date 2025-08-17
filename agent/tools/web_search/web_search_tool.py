@@ -14,7 +14,7 @@ class GetSearchSchema(BaseModel):
     query: str = Field(description="使用谷歌搜索获取最新信息。输入应为需要搜索的中文问题。")
 
 @tool(args_schema=GetSearchSchema)
-def google_search(query: str, max_results: int = 30) -> list:
+def google_search(query: str, max_results: int = 10) -> list:
     """
     使用谷歌搜索获取最新信息。输入应为需要搜索的中文问题。输入的问题应该简洁明了，避免使用复杂的语句。
     注意每个项目返回的发布日期是否为用户所需的日期，特别是当用户询问“今天”、“明天”或“后天”等时，确保返回的日期与用户期望一致。
@@ -56,11 +56,16 @@ def google_search(query: str, max_results: int = 30) -> list:
             link = item.get("link", "")
             domain = urlparse(link).netloc
             favicon = f"https://www.google.com/s2/favicons?domain={domain}"
+            import datetime
+            date = extract_date_from_snippet(item.get("snippet", ""))
+            date = date.strftime("%Y年%m月%d日")
             refs.append({
+                "index": len(refs),
                 "title": item.get("title", ""),
                 "link": link,
                 "snippet": item.get("snippet", ""),
-                "favicon": favicon
+                "favicon": favicon,
+                "date": date,
             })
             if len(refs) >= max_results:
                 break
