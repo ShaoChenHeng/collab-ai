@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
-from agent.tools.date.date_tool import today_date
+from agent.tools.date.date_tool import today_date, parse_cn_date, date_diff_days, date_diff_hint
 from agent.tools.spider.spider_tool import url_summary
 from agent.tools.web_search.web_search_tool import google_search
 import os, json, uuid, re
@@ -134,19 +134,39 @@ def get_search_results(messages, tool_name="google_search"):
                 return result
     return []
 
-def llm_judge_content(user_question: str, summary: str, date: str, llm_instance=None) -> (bool, str):
+def llm_judge_content(user_question: str, summary_dict: dict, date: str, llm_instance=None) -> (bool, str):
     """
-    用 LLM 判断 summary 是否能回答 user_question。
+    用 LLM 判断网页摘要是否能回答用户问题。
     返回 (True/False, 理由: str)
     """
-    prompt = f"""
-    用户问题：{user_question} \n
-    网页摘要内容：{summary}    \n
-    {"当前日期：" + date if date else ""} \n
-    请判断网页摘要内容是否对回答用户问题有参考价值？只要内容有部分帮助或相关信息，也可认为有参考价值。\n
-    如果用户问题需要实时信息（如天气、新闻、股市等），请额外检查摘要内容中的日期是否与当前日期相近（3天内）。如果日期太遥远就不选。\n
-    只需回答“是”或“否”，并在“否”后补充原因（20字左右）。\n
-    例如：“否”+你的原因 或 “是"+你的原因。\n"""
+
+    summary = summary_dict.get("summary", "")
+    summary_date_str = summary_dict.get("date", "")
+    diff_hint = ""
+    diff_days = ""
+
+    # 计算日期差距和提示
+    if summary_date_str and date:
+        diff_days = date_diff_days(summary_date_str, date)
+        diff_hint = date_diff_hint(diff_days)
+        date_info = (
+            f"网页摘要日期：{summary_date_str}\n"
+            f"当前日期：{date}\n"
+            f"日期相差：{diff_days}天\n"
+            f"{diff_hint}\n"
+        )
+    else:
+        date_info = f"网页摘要日期：{summary_date_str}\n当前日期：{date}\n"
+
+    prompt = (
+        f"用户问题：{user_question}\n"
+        f"网页摘要内容：{summary}\n"
+        f"{date_info}"
+        "请判断网页摘要内容是否对回答用户问题有参考价值？只要内容有部分帮助或相关信息，也可认为有参考价值。\n"
+        "如用户问题需要实时信息，请结合日期差距综合判断。\n"
+        "只需回答“是”或“否”，并在“否”后补充原因（20字左右）。\n"
+        "例如：“否、你的原因” 或 “是、你的原因”。\n"
+    )
 
     if llm_instance is None:
         raise ValueError("没有可用的llm实例")
@@ -158,7 +178,7 @@ def llm_judge_content(user_question: str, summary: str, date: str, llm_instance=
     print(f"LLM judge_content response: {llm_response_text}\n")
     # 解析结果
     if llm_response_text.startswith("是"):
-        return True, ""
+        return True, llm_response_text
     if llm_response_text.startswith("否"):
         # 提取否后面的理由
         reason = llm_response_text[1:].lstrip('，,：:').strip()
@@ -178,11 +198,12 @@ def llm_select_next_url(user_question, search_results, tried_urls, date, llm_ins
         "1. 已尝试过的链接不选，选择最可能回答用户问题的编号（index），只回复数字编号。\n"
         "2. 如果是实时类问题（新闻、天气、股票），那么snippet中的应该和当前日期相近。\n"
         "3. snippet、title、score都是你的评价指标，尽量选择和问题相关的链接。如果所有都不合适请回复-1。\n"
+        "4. slectable字段表示该链接是否可以被选中，只有selectable为True的链接才可以被选中。\n"
+        f"用户问题：{user_question}\n"
+        f"当前日期：{date}\n"
+        f"以下是已经尝试过的链接：{tried_urls}\n"
+        f"以下是搜索到的网页链接列表：{search_results}\n"
     )
-    prompt += f"用户问题：{user_question}\n"
-    prompt += f"当前日期：{date}\n"
-    prompt += f"以下是已经尝试过的链接：{tried_urls}\n"
-    prompt += f"以下是搜索到的网页链接列表：{search_results}\n"
 
     if llm_instance is None:
         raise ValueError("必须传入 llm_instance")
@@ -234,13 +255,26 @@ def remove_url_summary_by_id(messages, target_id):
         new_messages.append(msg)
     return new_messages
 
-def judge_content(user_question: str, summary: str, date: str, llm_instance=None) -> (bool, str):
+def mark_unselectable(search_results, url):
+    """
+    将search_results中所有link==url的项的selectable字段设为False。
+    """
+    for item in search_results:
+        if item.get("link") == url:
+            item["selectable"] = False
+    return search_results
+
+def judge_content(user_question: str, summary_dict: dict, date: str, llm_instance=None) -> (bool, str):
     """
     判断 summary 是否能回答 user_question。
     返回 (is_satisfied: bool, reason: str)
     """
-    result, llm_reason = llm_judge_content(user_question, summary, date, llm_instance)
-    reason = llm_reason or ("内容可以回答用户问题" if result else "LLM判定该网页摘要内容无法回答用户问题")
+    result, llm_reason = llm_judge_content(user_question, summary_dict, date, llm_instance)
+    # 如果llm_reason有内容（非空且非空白），用它；否则用默认文本
+    if llm_reason and llm_reason.strip():
+        reason = llm_reason.strip()
+    else:
+        reason = "内容可以回答用户问题" if result else "LLM判定该网页摘要内容无法回答用户问题"
     print(f"judge_content: LLM判断结果为 {result}, 原因: {reason}")
     return result, reason
 
@@ -287,6 +321,7 @@ def should_judge(messages):
     return False
 
 def chatbot(state: MessagesState):
+    print("** IN CHATBOT **", state["messages"])
     return {"messages": [llm.invoke([sys_msg] + state["messages"])]}
 
 def planning(state):
@@ -299,16 +334,29 @@ def planning(state):
         url_summary_results, url, tool_call_id = get_url_summary(messages)
         search_results = get_search_results(messages, "google_search")
         today = today_date.invoke({})
-        is_satisfied, reason = judge_content(user_question, url_summary_results, today, llm)
+        # 将 search_results 中的每个项都标记为可选
+        for item in search_results:
+            item["selectable"] = True
+        # 给summary添加日期
+        summary_date = None
+        for item in search_results:
+                if item.get("link") == url:
+                    summary_date = item.get("date", None)
+                    break
+        url_summary_dict = {
+            "summary": url_summary_results,
+            "date": summary_date
+        }
+
+        is_satisfied, reason = judge_content(user_question, url_summary_dict, today, llm)
         print(f"[planning] judge_content结果: is_satisfied={is_satisfied}, reason={reason}")
 
         if is_satisfied:
-            print("[planning] 内容满足，进入chatbot节点")
             next_node = "chatbot"
             global_tried_count = 0
-
         else:
-            tried_urls.append(url)  # 记录已尝试过的链接
+            tried_urls.append(url)
+            search_results = mark_unselectable(search_results, url)
             print("tried_urls:", tried_urls)
             messages = remove_url_summary_by_id(messages, tool_call_id)
             if global_tried_count >= max_retry:
@@ -317,9 +365,7 @@ def planning(state):
                 tried_urls = []
                 next_node = "chatbot"
             else:
-                # 直接选 google_search 结果中的第二个（索引1）
                 print("[planning] 匹配不合适，准备重选")
-
                 if search_results and len(search_results) > 0:
                     choose_index = llm_select_next_url(user_question, search_results, today, tried_urls, llm)
                     if choose_index == -1:
@@ -390,6 +436,20 @@ def agent_respond(user_input: str) -> str:
                 response = str(msg)
     return response
 
+def is_final_agent_reply(msg):
+    """
+    判断 AIMessage 是否为 agent 的最终自然语言回复。
+    """
+    if type(msg).__name__ != "AIMessage":
+        return False
+    # 检查 tool_calls 字段
+    has_tool_calls = False
+    if hasattr(msg, "tool_calls") and msg.tool_calls:
+        has_tool_calls = True
+    elif hasattr(msg, "additional_kwargs") and "tool_calls" in msg.additional_kwargs:
+        has_tool_calls = bool(msg.additional_kwargs["tool_calls"])
+    return not has_tool_calls and bool(msg.content and msg.content.strip())
+
 def agent_respond_stream(user_input: str):
     state = {"messages": [("user", user_input)]}
     for event in graph.stream(state, config):
@@ -397,6 +457,10 @@ def agent_respond_stream(user_input: str):
             if node == "tools":
                 tool_msg = value.get("messages", [])[-1] if value.get("messages") else None
                 if tool_msg:
+                    query = None
+                    if hasattr(tool_msg, "tool_calls") and tool_msg.tool_calls:
+                        tc = tool_msg.tool_calls[0]
+                        query = tc.get("args", {}).get("query")
                     entry = {
                         "type": "tool_result",
                         "tool": getattr(tool_msg, "name", "unknown"),
@@ -404,24 +468,22 @@ def agent_respond_stream(user_input: str):
                         "meta": {
                             "tool_call_id": getattr(tool_msg, "tool_call_id", None),
                             "id": getattr(tool_msg, "id", None),
-                        }
+                        },
+                        "query": query,
+                        "is_final": False
                     }
                     yield entry
             elif node == "chatbot":
                 bot_msg = value.get("messages", [])[-1]
                 content = getattr(bot_msg, "content", str(bot_msg))
-                if content.startswith("thought:"):
-                    entry = {
-                        "type": "intermediate_step",
-                        "role": getattr(bot_msg, "role", "assistant"),
-                        "content": content
-                    }
-                else:
-                    entry = {
-                        "type": "chat",
-                        "role": getattr(bot_msg, "role", "assistant"),
-                        "content": getattr(bot_msg, "content", str(bot_msg))
-                    }
+                final = is_final_agent_reply(bot_msg)
+                entry_type = "chat" if final else "intermediate_step"
+                entry = {
+                    "type": entry_type,
+                    "role": getattr(bot_msg, "role", "assistant"),
+                    "content": content,
+                    "is_final": final
+                }
                 yield entry
 
 if __name__ == "__main__":
