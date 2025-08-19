@@ -42,6 +42,7 @@ sys_msg = SystemMessage(content=
 2. 搜索时使用自然时间词而非具体日期（如搜'今天温州天气'而非'2025年7月21日 温州天气'）\n"
 3. 如果是实时信息，搜索结果的日期必须与用户问题中的时间概念一致（如“今天”、“明天”等），否则需要重新搜索。
 4. 关键词尽量短
+5. 在一轮回答中总google_search的次数不超过3次，避免过多调用\n
 
 **网页摘要规则**\n
 1. 在选取某个链接进行url_summary之前，检查snippet中的日期是否与用户问题中的**时间概念一致**（如“今天”、“明天”等），如果是实时信息，例如：'新闻'，'天气'，'股票'等，必须确保日期一致，否则需要重新选择链接。
@@ -450,6 +451,23 @@ def is_final_agent_reply(msg):
         has_tool_calls = bool(msg.additional_kwargs["tool_calls"])
     return not has_tool_calls and bool(msg.content and msg.content.strip())
 
+def get_tool_query(tool_msg):
+    """
+    从 AIMessage.tool_calls 提取工具参数（如 google_search 的 query），兼容 dict 或 JSON 字符串格式。
+    返回 query 字符串，如无则为 None。
+    """
+    if not hasattr(tool_msg, "tool_calls") or not tool_msg.tool_calls:
+        return None
+    tc = tool_msg.tool_calls[0]
+    args = tc.get("args", {})
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {}
+    print("[query]", args.get("query"))
+    return args.get("query")
+
 def agent_respond_stream(user_input: str):
     state = {"messages": [("user", user_input)]}
     for event in graph.stream(state, config):
@@ -457,10 +475,6 @@ def agent_respond_stream(user_input: str):
             if node == "tools":
                 tool_msg = value.get("messages", [])[-1] if value.get("messages") else None
                 if tool_msg:
-                    query = None
-                    if hasattr(tool_msg, "tool_calls") and tool_msg.tool_calls:
-                        tc = tool_msg.tool_calls[0]
-                        query = tc.get("args", {}).get("query")
                     entry = {
                         "type": "tool_result",
                         "tool": getattr(tool_msg, "name", "unknown"),
@@ -469,7 +483,6 @@ def agent_respond_stream(user_input: str):
                             "tool_call_id": getattr(tool_msg, "tool_call_id", None),
                             "id": getattr(tool_msg, "id", None),
                         },
-                        "query": query,
                         "is_final": False
                     }
                     yield entry
@@ -478,10 +491,14 @@ def agent_respond_stream(user_input: str):
                 content = getattr(bot_msg, "content", str(bot_msg))
                 final = is_final_agent_reply(bot_msg)
                 entry_type = "chat" if final else "intermediate_step"
+                query = None
+                if hasattr(bot_msg, "tool_calls") and bot_msg.tool_calls:
+                    query = get_tool_query(bot_msg)
                 entry = {
                     "type": entry_type,
                     "role": getattr(bot_msg, "role", "assistant"),
                     "content": content,
+                    "query": query,
                     "is_final": final
                 }
                 yield entry
