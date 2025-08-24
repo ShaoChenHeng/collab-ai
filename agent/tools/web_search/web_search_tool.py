@@ -60,7 +60,6 @@ def google_search(query: str, max_results: int = 10) -> list:
             date = extract_date_from_snippet(item.get("snippet", ""))
             date = date.strftime("%Y年%m月%d日")
             refs.append({
-                "index": len(refs),
                 "title": item.get("title", ""),
                 "link": link,
                 "snippet": item.get("snippet", ""),
@@ -87,7 +86,8 @@ def google_search(query: str, max_results: int = 10) -> list:
             "snippet": "未查到与您的问题相关的网页信息。"
         })
     sorted = sort_search_results(refs, query)
-    # print("sorted:", sorted)
+    for idx, item in enumerate(sorted):
+        item['index'] = idx
 
     return sorted
 
