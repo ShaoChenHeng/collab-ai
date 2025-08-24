@@ -112,6 +112,6 @@ def url_summary(url):
         if pub_date:
             return f"发布时间: {pub_date}\n{cleaned}"
         else:
-            return cleaned
+            return cleaned[:800]
     except Exception as e:
         return f"无法获取摘要：{str(e)}"
