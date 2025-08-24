@@ -18,6 +18,7 @@ tried_urls = []  # 记录已经尝试过但不满意的 google_search 结果索�
 
 tools = [today_date, google_search, url_summary]
 tool_node = ToolNode(tools)
+enable_planning = False
 
 ### 定义模型和 chatbot 节点
 api_key = os.getenv("DEEPSEEK_API_KEY_FROM_ENV")
@@ -73,21 +74,17 @@ def get_user_question(messages):
     return ""
 
 def get_url_summary(messages, tool_name="url_summary"):
-    """
-    逆序查找最近一次 url_summary 工具调用，
-    返回 (content, url)，如果未找到则返回 (None, None)
-    url 从 tool_call_id 对应的 dict 里的 'url' 字段获取
-    """
-    # 步骤1：找到最近一次 ToolMessage
     content = None
+    tool_call_id = None
     for msg in reversed(messages):
         if hasattr(msg, "type") and msg.type == "tool" and getattr(msg, "name", "") == tool_name:
             content = getattr(msg, "content", None)
             tool_call_id = getattr(msg, "tool_call_id", None)
-            break  # 找到就用，不再继续
+            break
 
     if tool_call_id is None:
-        return None, None
+        # 统一返回三元组，避免解包错误
+        return None, None, None
 
     url = None
     target_tool_calls = None
@@ -98,14 +95,12 @@ def get_url_summary(messages, tool_name="url_summary"):
             tool_calls = msg["tool_calls"]
         else:
             continue
-        # 检查里面有没有 id 匹配的
         if any(tc.get("id") == tool_call_id for tc in tool_calls):
             target_tool_calls = tool_calls
             break
     if not target_tool_calls:
         return content, None, tool_call_id
 
-    # 第三步：在目标 tool_calls 列表中查找 id 匹配并返回 url
     for item in target_tool_calls:
         if item.get("id") == tool_call_id:
             url = item.get("args", {}).get("url", None)
@@ -199,7 +194,7 @@ def llm_select_next_url(user_question, search_results, tried_urls, date, llm_ins
         "1. 已尝试过的链接不选，选择最可能回答用户问题的编号（index），只回复数字编号。\n"
         "2. 如果是实时类问题（新闻、天气、股票），那么snippet中的应该和当前日期相近。\n"
         "3. snippet、title、score都是你的评价指标，尽量选择和问题相关的链接。如果所有都不合适请回复-1。\n"
-        "4. slectable字段表示该链接是否可以被选中，只有selectable为True的链接才可以被选中。\n"
+        "4. selectable字段表示该链接是否可以被选中，只有selectable为True的链接才可以被选中。\n"
         f"用户问题：{user_question}\n"
         f"当前日期：{date}\n"
         f"以下是已经尝试过的链接：{tried_urls}\n"
@@ -226,10 +221,17 @@ def llm_select_next_url(user_question, search_results, tried_urls, date, llm_ins
     )
     if invalid:
         print("LLM输出无效、超范围或选中了已尝试过的链接，自动兜底选分数最高的未尝试项")
-        # 自动兜底：选分数最高的未尝试项
-        untried = [(i, item) for i, item in enumerate(search_results) if item.get("link") not in tried_urls]
+        print("[search_results] ", search_results)
+        print("[tried_urls] ", tried_urls)
+        # 只选没尝试过且 selectable 为 True 的项
+        untried = [
+            (i, item)
+            for i, item in enumerate(search_results)
+            if item.get("link") not in tried_urls and item.get("selectable", True)
+        ]
         if not untried:
             return -1
+        print("[untried] ", untried)
         # 按分数降序排序，取第一个
         untried.sort(key=lambda x: x[1].get("score", 0), reverse=True)
         choose_index = untried[0][0]
@@ -322,7 +324,7 @@ def should_judge(messages):
     return False
 
 def chatbot(state: MessagesState):
-    print("** IN CHATBOT **", state["messages"])
+    # print("** IN CHATBOT **", state["messages"])
     return {"messages": [llm.invoke([sys_msg] + state["messages"])]}
 
 def planning(state):
@@ -368,7 +370,13 @@ def planning(state):
             else:
                 print("[planning] 匹配不合适，准备重选")
                 if search_results and len(search_results) > 0:
-                    choose_index = llm_select_next_url(user_question, search_results, today, tried_urls, llm)
+                    choose_index = llm_select_next_url(
+                        user_question=user_question,
+                        search_results=search_results,
+                        tried_urls=tried_urls,
+                        date=today,
+                        llm_instance=llm
+                    )
                     if choose_index == -1:
                         print("[planning] LLM判定没有合适链接，进入chatbot")
                         global_tried_count = 0
@@ -409,19 +417,33 @@ def planning(state):
 
     return {"next": next_node, "messages": messages, "state": state}
 
+def select(state):
+    global enable_planning
+    messages = state["messages"]
+    if enable_planning:
+        next_node = "planning"
+    else:
+        next_node = "chatbot"
+    return {"next": next_node, "messages": messages, "state": state}
+
 graph_builder = StateGraph(MessagesState)
 graph_builder.add_node("chatbot", chatbot)
 graph_builder.add_node("tools", tool_node)
 graph_builder.add_node("planning", planning)
+graph_builder.add_node("select", select)
 
 graph_builder.add_edge(START, "chatbot")
 graph_builder.add_conditional_edges("chatbot", tools_condition)
-graph_builder.add_edge("tools", "planning")                      # 所有tools输出进planning
+graph_builder.add_edge("tools", "select")
+graph_builder.add_conditional_edges("select", lambda state: state["next"])
 graph_builder.add_conditional_edges("planning", lambda state: state["next"])  # planning决定下一步
 
 memory = MemorySaver()
 graph = graph_builder.compile(checkpointer=memory)
-config = {"configurable":{"thread_id":"1"}}
+config = {
+    "recursion_limit": 100,
+    "configurable":{"thread_id":"1"}
+}
 
 def agent_respond(user_input: str) -> str:
     """核心对话接口，自动维护多轮历史（基于 MemorySaver 的 thread_id）"""
@@ -468,7 +490,9 @@ def get_tool_query(tool_msg):
     print("[query]", args.get("query"))
     return args.get("query")
 
-def agent_respond_stream(user_input: str):
+def agent_respond_stream(user_input: str, deep_thinking: bool = False):
+    global enable_planning
+    enable_planning = deep_thinking
     state = {"messages": [("user", user_input)]}
     for event in graph.stream(state, config):
         for node, value in event.items():
