@@ -1,160 +1,176 @@
 <template>
   <div class="chat-root">
     <div class="chat-main">
-      <div class="chat-messages" ref="messagesEl">
-        <template v-for="(msg, idx) in messages" :key="msg.id">
-          <!-- 用户消息 -->
-          <div v-if="msg.from === 'me'" class="message-row user-row">
-            <div class="bubble-with-toolbar user-side">
-              <div class="user-message-bubble">
-                {{ msg.text }}
-              </div>
-              <div class="bubble-toolbar user-toolbar">
-                <el-icon
-                  class="toolbar-icon"
-                  title="复制"
-                  v-if="!msg.copied"
-                  @click="copyToClipboard(msg, idx)">
-                  <CopyDocument />
-                </el-icon>
-                <el-icon
-                  class="toolbar-icon"
-                  title="已复制"
-                  v-else
-                  style="color: #52c41a">
-                  <Check />
-                </el-icon>
-                <el-icon class="toolbar-icon" title="重新编辑"><EditPen /></el-icon>
-              </div>
-            </div>
-          </div>
-          <!-- agent消息：左侧头像，右侧上下两个气泡 -->
-          <template v-else-if="msg.from === 'agent'">
-            <div class="message-row agent-row">
-              <!-- 左侧头像 -->
-              <img class="agent-avatar" src="/mu.png" alt="头像" />
-              <!-- 右侧气泡堆叠 -->
-              <div class="agent-bubble-stack">
-                <!-- 顶部过程泡泡 -->
-                <button
-                  class="thought-toggle-btn-row"
-                  @click="toggleThought(msg.id)"
-                  v-if="msg.thoughts && msg.thoughts.length > 0"
-                >
-                  <el-icon class="thought-static-icon"><EditPen /></el-icon>
-                  <span class="thought-title-btn">智能体思考</span>
-                  <el-icon class="arrow-icon-btn" v-if="thoughtExpanded[msg.id]"><ArrowUp /></el-icon>
-                  <el-icon class="arrow-icon-btn" v-else><ArrowDown /></el-icon>
-                </button>
-                <transition name="fade">
-                  <div v-if="thoughtExpanded[msg.id]" class="agent-thought-bubble">
-                    <transition-group name="fade-in" tag="div">
-                      <div
-                        v-for="(t, i) in msg.thoughts"
-                        :key="i"
-                        class="thought-content-row"
-                      >
-                        {{ t }}
-                      </div>
-                    </transition-group>
-                  </div>
-                </transition>
-                <!-- 回复泡泡 -->
-                <div class="bubble-with-toolbar agent-side">
-                  <div class="agent-message-block">
-                    <template v-if="msg.isLoading">
-                      <el-icon class="thinking-icon is-loading" style="font-size: 24px;">
-                        <Loading />
-                      </el-icon>
-                      <span style="margin-left: 0.5em;" v-if="msg.text">{{ msg.text }}</span>
-                    </template>
-                    <transition name="fade-in">
-                      <span v-if="!msg.isLoading" v-html="renderMarkdown(msg.text)"></span>
-                    </transition>
-                  </div>
-<div class="bubble-toolbar agent-toolbar">
-                    <el-icon
-                      class="toolbar-icon"
-                      title="复制"
-                      v-if="!msg.copied && !msg.isLoading"
-                      @click="copyToClipboard(msg, idx)">
-                      <CopyDocument />
-                    </el-icon>
-                    <el-icon
-                      class="toolbar-icon"
-                      title="已复制"
-                      v-else-if="!msg.isLoading"
-                      style="color: #52c41a"
-                    >
-                      <Check />
-                    </el-icon>
-                    <el-icon v-if="!msg.isLoading" class="toolbar-icon" title="重新生成"><Refresh /></el-icon>
-                  </div>
+        <div class="chat-messages" ref="messagesEl">
+          <template v-for="(msg, idx) in messages" :key="msg.id">
+            <!-- 用户消息 -->
+            <div v-if="msg.from === 'me'" class="message-row user-row">
+              <div class="bubble-with-toolbar user-side">
+                <div class="user-message-bubble">
+                  {{ msg.text }}
+                </div>
+                <div class="bubble-toolbar user-toolbar">
+                  <el-icon
+                    class="toolbar-icon"
+                    title="复制"
+                    v-if="!msg.copied"
+                    @click="copyToClipboard(msg, idx)">
+                    <CopyDocument />
+                  </el-icon>
+                  <el-icon
+                    class="toolbar-icon"
+                    title="已复制"
+                    v-else
+                    style="color: #52c41a">
+                    <Check />
+                  </el-icon>
+                  <el-icon class="toolbar-icon" title="重新编辑"><EditPen /></el-icon>
                 </div>
               </div>
             </div>
+            <!-- agent消息：左侧头像，右侧上下两个气泡 -->
+            <template v-else-if="msg.from === 'agent'">
+              <div class="message-row agent-row">
+                <!-- 左侧头像 -->
+                <img class="agent-avatar" src="/mu.png" alt="头像" />
+                <!-- 右侧气泡堆叠 -->
+                <div class="agent-bubble-stack">
+                  <!-- 顶部过程泡泡 -->
+                  <div class="toggle-btn-row-group">
+                    <ChatPanelToggleBtn
+                      :icon="EditPen"
+                      label="智能体思考"
+                      :arrowIcon="thoughtExpanded[msg.id] ? ArrowUp : ArrowDown"
+                      :active="thoughtExpanded[msg.id]"
+                      @click="toggleThought(msg.id)"
+                      v-if="msg.thoughts && msg.thoughts.length > 0"
+                    />
+                    <ChatPanelToggleBtn
+                      :icon="Link"
+                      label="相关链接"
+                      :arrowIcon="currentWebLinksMsgId === msg.id ? ArrowRight : ArrowRight"
+                      :active="currentWebLinksMsgId === msg.id"
+                      @click="openWebLinksPanel(msg.id)"
+                      v-if="msg.weblinks && msg.weblinks.length > 0"
+                    />
+                  </div>
+                  <transition name="fade">
+                    <div v-if="thoughtExpanded[msg.id]" class="agent-thought-bubble">
+                      <transition-group name="fade-in" tag="div">
+                        <div
+                          v-for="(t, i) in msg.thoughts"
+                          :key="i"
+                          class="thought-content-row"
+                        >
+                          {{ t }}
+                        </div>
+                      </transition-group>
+                    </div>
+                  </transition>
+                  <!-- 回复泡泡 -->
+                  <div class="bubble-with-toolbar agent-side">
+                    <div class="agent-message-block">
+                      <template v-if="msg.isLoading">
+                        <el-icon class="thinking-icon is-loading" style="font-size: 24px;">
+                          <Loading />
+                        </el-icon>
+                        <span style="margin-left: 0.5em;" v-if="msg.text">{{ msg.text }}</span>
+                      </template>
+                      <transition name="fade-in">
+                        <span v-if="!msg.isLoading" v-html="renderMarkdown(msg.text)"></span>
+                      </transition>
+                    </div>
+                    <div class="bubble-toolbar agent-toolbar">
+                      <el-icon
+                        class="toolbar-icon"
+                        title="复制"
+                        v-if="!msg.copied && !msg.isLoading"
+                        @click="copyToClipboard(msg, idx)">
+                        <CopyDocument />
+                      </el-icon>
+                      <el-icon
+                        class="toolbar-icon"
+                        title="已复制"
+                        v-else-if="!msg.isLoading"
+                        style="color: #52c41a"
+                      >
+                        <Check />
+                      </el-icon>
+                      <el-icon v-if="!msg.isLoading" class="toolbar-icon" title="重新生成"><Refresh /></el-icon>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
           </template>
-        </template>
-      </div>
-      <!-- 输入区container，分上下两部分 -->
-      <div
-        class="chat-input-container"
-        :class="{ focused: inputFocused }"
-      >
-        <!-- 上方输入框，单独一行，自适应多行 -->
-        <textarea
-          v-model="input"
-          class="chat-input"
-          placeholder="输入消息..."
-          autocomplete="off"
-          rows="2"
-          ref="textareaEl"
-          @input="autoResize"
-          @focus="inputFocused = true"
-          @blur="inputFocused = false"
-          @keydown.enter.exact.prevent="sendMessage"
-        ></textarea>
-        <!-- 下方按钮container -->
-        <div class="chat-btns-container">
-          <button class="input-btn" @click="onLocalDoc">
-            <el-icon class="btn-icon"><Document /></el-icon>
-            <span class="btn-text">本地文档</span>
-          </button>
-          <button
-            class="input-btn"
-            :class="{ active: useWebSearch }"
-            @click="toggleWebSearch"
-          >
-            <el-icon class="btn-icon"><Search /></el-icon>
-            <span class="btn-text">网络搜索</span>
-          </button>
-          <div class="btns-spacer"></div>
-          <button
-            class="chat-send-btn"
-            :disabled="!canSend"
-            :class="{ disabled: !canSend }"
-            @click="sendMessage"
-            title="发送"
-          >
-            <el-icon><Promotion /></el-icon>
-          </button>
         </div>
-      </div>
-      <!-- 免责声明应该和输入区平级在 chat-main 内部 -->
-      <div class="ai-disclaimer">
-        内容由 AI 生成，请仔细甄别
-      </div>
+        <!-- 输入区container，分上下两部分 -->
+        <div
+          class="chat-input-container"
+          :class="{ focused: inputFocused }"
+        >
+          <!-- 上方输入框，单独一行，自适应多行 -->
+          <textarea
+            v-model="input"
+            class="chat-input"
+            placeholder="输入消息..."
+            autocomplete="off"
+            rows="2"
+            ref="textareaEl"
+            @input="autoResize"
+            @focus="inputFocused = true"
+            @blur="inputFocused = false"
+            @keydown.enter.exact.prevent="sendMessage"
+          ></textarea>
+          <!-- 下方按钮container -->
+          <div class="chat-btns-container">
+            <button class="input-btn"
+              :class="{ active: useDeepThinking }"
+              @click="toggleDeepThinking">
+              <el-icon class="btn-icon"><Cpu /></el-icon>
+              <span class="btn-text">深度思考</span>
+            </button>
+            <button
+              class="input-btn"
+              :class="{ active: useWebSearch }"
+              @click="toggleWebSearch"
+            >
+              <el-icon class="btn-icon"><Search /></el-icon>
+              <span class="btn-text">网络搜索</span>
+            </button>
+            <div class="btns-spacer"></div>
+            <button
+              class="chat-send-btn"
+              :disabled="!canSend"
+              :class="{ disabled: !canSend }"
+              @click="sendMessage"
+              title="发送"
+            >
+              <el-icon><Promotion /></el-icon>
+            </button>
+          </div>
+        </div>
+        <!-- 免责声明应该和输入区平级在 chat-main 内部 -->
+        <div class="ai-disclaimer">
+          内容由 AI 生成，请仔细甄别
+        </div>
+    </div>
+    <div v-if="weblinksPanelVisible" class="weblinks-panel">
+      <WebLinksPanel :show="weblinksPanelVisible" :links="currentWebLinks" @close="closeWebLinksPanel" />
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue'
-import { Check, Document, Search, Promotion, CopyDocument, EditPen, Refresh, Loading, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
+import { Cpu, Check, Search, Promotion, CopyDocument, EditPen, Refresh, Loading, ArrowUp, ArrowDown, ArrowRight, Link } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import {   fetchAgentReplyStream } from '@/api/chat.js'
+import { fetchAgentReplyStream } from '@/api/chat.js'
 import MarkdownIt from 'markdown-it'
-import { computed } from 'vue'
+import { computed, watch, nextTick } from 'vue'
+import WebLinksPanel from '@/components/WebLinksPanel.vue'
+import ChatPanelToggleBtn from '@/components/ChatPanelToggleBtn.vue'
+import { useWebLinksPanel } from '@/hooks/useWebLinksPanel.js'
 
 const isAgentLoading = computed(() => messages.value.some(m => m.from === 'agent' && m.isLoading));
 const canSend = computed(() => input.value.trim().length > 0 && !isAgentLoading.value);
@@ -182,6 +198,68 @@ const inputFocused = ref(false)
 const renderMarkdown = (text) => {
   return md.render(text || '')
 }
+const useDeepThinking = ref(false)
+md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
+  const aIndex = tokens[idx].attrIndex('target')
+  if (aIndex < 0) {
+    tokens[idx].attrPush(['target', '_blank']) // add new attribute
+  } else {
+    tokens[idx].attrs[aIndex][1] = '_blank' // replace value
+  }
+  // 安全性再加 rel="noopener noreferrer"
+  const relIndex = tokens[idx].attrIndex('rel')
+  if (relIndex < 0) {
+    tokens[idx].attrPush(['rel', 'noopener noreferrer'])
+  } else {
+    tokens[idx].attrs[relIndex][1] = 'noopener noreferrer'
+  }
+  return self.renderToken(tokens, idx, options)
+}
+const {
+  weblinksPanelVisible,
+  currentWebLinksMsgId,
+  currentWebLinks,
+  openWebLinksPanel,
+  closeWebLinksPanel,
+  setWebLinksToMsg
+} = useWebLinksPanel(messages)
+// 自动滚动到底部
+watch(messages, () => {
+  // 下一个 tick，让 DOM 渲染完成再滚动
+  setTimeout(() => {
+    if (messagesEl.value) {
+      messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+    }
+  }, 0)
+})
+function scrollToBottom() {
+  nextTick(() => {
+    const el = messagesEl.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+// 监听消息数组变化
+watch(
+  messages,
+  () => {
+    scrollToBottom()
+  },
+  { deep: true }
+)
+
+// 如果你有“链接面板显示/关闭”，也可以监听
+watch(
+  weblinksPanelVisible,
+  () => {
+    scrollToBottom()
+  }
+)
+function toggleWebSearch() {
+  useWebSearch.value = !useWebSearch.value
+}
+function toggleDeepThinking() {
+  useDeepThinking.value = !useDeepThinking.value
+}
 function toggleThought(id) {
   thoughtExpanded.value[id] = !thoughtExpanded.value[id]
 }
@@ -193,7 +271,7 @@ async function sendMessage(e) {
   let userText = input.value.trim()
   // 如果选中了网络搜索，加前缀
   if (useWebSearch.value) {
-    userText = '请你使用网络搜索，' + userText
+    userText = '请你网络搜索相关关键字后回答：' + userText
     useWebSearch.value = false // 发送后自动关闭高亮
   }
   // 用户消息入队
@@ -212,13 +290,19 @@ async function sendMessage(e) {
   messages.value.push({
     id: agentMsgId,
     from: 'agent',
+    text: '',
     isLoading: true,
     copied: false,
-    thoughts: []  // 用于展示中间过程
+    thoughts: [],  // 用于展示中间过程
+    weblinks: []
   })
+  input.value = ''
   thoughtExpanded.value[agentMsgId] = true
-
-  fetchAgentReplyStream(userText, (entry) => {
+  const options = {
+    deepThinking: useDeepThinking.value,
+    webSearch: useWebSearch.value
+  }
+  fetchAgentReplyStream(userText, options, (entry) => {
     // 忽略掉 content 为空的 entry
     if (!entry.content || entry.content.trim() === '') return;
 
@@ -235,8 +319,9 @@ async function sendMessage(e) {
         } catch {
           results = []
         }
+        setWebLinksToMsg(agentMsgId, results)
         const n = Array.isArray(results) ? results.length : 0
-        let str = `调用“google_search”工具，得到了${n}个搜索结果：`
+        let str = `调用“google_search”工具，搜索关键词为：“${msg.searchQuery || ''}”，得到了${n}个搜索结果：`
         if (n > 0) {
           // 只取前三项
           const showResults = results.slice(0, 3)
@@ -257,6 +342,9 @@ async function sendMessage(e) {
       }
     } else if (entry.type === "intermediate_step") {
       msg.thoughts.push(entry.content)
+      if (entry.query) {
+        msg.searchQuery = entry.query
+      }
     } else if (entry.type === "chat") {
       msg.text = entry.content
       msg.isLoading = false
@@ -281,29 +369,33 @@ function autoResize() {
     textareaEl.value.style.height = textareaEl.value.scrollHeight + 'px'
   }
 }
-function toggleWebSearch() {
-  useWebSearch.value = !useWebSearch.value
-}
-function onLocalDoc() {
-  alert('本地文档功能待实现')
-}
+
 </script>
 
 <style scoped>
 .chat-root {
   width: 100vw;
   height: 100vh;
-  background: #fff;
   display: flex;
+  flex-direction: row;
   justify-content: center;
-  align-items: center;
+  align-items: stretch;
+  position: relative;
+  overflow: hidden;
 }
 .chat-main {
   width: 60vw;
   height: 100vh;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   background: #fff;
+}
+.chat-content-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 .chat-input-container {
   width: 98%;
@@ -341,6 +433,12 @@ function onLocalDoc() {
   transition: box-shadow 0.2s;
   color: #222;
   vertical-align: top;
+}
+.toggle-btn-row-group {
+  display: flex;
+  flex-direction: row;
+  gap: 4px; /* 两个按钮间距 */
+
 }
 .chat-input::placeholder {
   color: #b0b3ba;
@@ -519,6 +617,7 @@ function onLocalDoc() {
   box-shadow: none;
   max-width: 100%;
   min-width: 0;
+
   white-space: normal;
   word-wrap: break-word;
   overflow-wrap: anywhere;
@@ -543,6 +642,16 @@ function onLocalDoc() {
   border-radius: 0;
   font-size: 0;
   user-select: none;
+}
+.toggle-btn-row.active {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+
+.toggle-btn-row.active .arrow-icon-btn,
+.toggle-btn-row.active .static-icon {
+  color: #fff;
 }
 .user-toolbar {
   justify-content: flex-end;
@@ -576,40 +685,6 @@ function onLocalDoc() {
   scrollbar-width: thin;
   scrollbar-color: #e0e4ea transparent;
 }
-.thought-toggle-btn-row {
-  background: #fff;
-  border: 1.5px solid #3b82f6;
-  border-radius: 8px;
-  color: #3b82f6;
-  font-weight: 600;
-  font-size: 15px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 5px 5px 10px;
-  margin-bottom: 2px;
-  min-width: 0;
-  max-width: 60vw;
-  cursor: pointer;
-  outline: none;
-  transition: background 0.18s, border-color 0.18s;
-}
-.thought-toggle-btn-row:hover {
-  background: #f0f6ff;
-  border-color: #2563eb;
-}
-.thought-title-btn {
-  font-size: 13px;
-}
-.arrow-icon-btn {
-  font-size: 13px;
-  margin-left: 2px;
-  color: #b0b3ba;
-  transition: color 0.2s;
-}
-.arrow-icon-btn:hover {
-  color: #409eff;
-}
 @keyframes spin {
   0% {transform: rotate(0deg);}
   100% {transform: rotate(360deg);}
@@ -630,7 +705,7 @@ function onLocalDoc() {
   background: #fff;
   border: none;
   border-radius: 10px;
-  margin: 2px 0 8px 0;
+  margin: 2px 0 2px 0;
   padding: 0;
   width: 100%;
   max-width: 100%;
@@ -659,5 +734,19 @@ function onLocalDoc() {
 .fade-in-enter-to, .fade-in-leave-from {
   opacity: 1;
   transform: translateY(0);
+}
+.weblinks-panel {
+  flex:1;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 20vw; /* 剩余的右侧空间 */
+  height: 100vh;
+  background: #fff;
+  border-left: 1px solid #e4e8ef;
+  box-shadow: -2px 0 12px rgba(0,0,0,0.07);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
 }
 </style>

@@ -1,10 +1,11 @@
 // src/api/chat.js
-export async function fetchAgentReply(userText) {
+export async function fetchAgentReply(message, options = {}) {
   try {
+    const payload = { message, options }
     const res = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: userText })
+      body: JSON.stringify(payload)
     })
     if (!res.ok) throw new Error('网络异常')
     const data = await res.json()
@@ -18,11 +19,12 @@ export async function fetchAgentReply(userText) {
     return '网络错误，无法获取AI响应。'
   }
 }
-export async function fetchAgentReplyStream(userText, onData) {
+export async function fetchAgentReplyStream(message, options = {}, onData) {
   const controller = new AbortController()
+  const payload = { message, options }
   const resp = await fetch('http://localhost:8000/chat/stream', {
     method: 'POST',
-    body: JSON.stringify({ message: userText }),
+    body: JSON.stringify(payload),
     headers: { 'Content-Type': 'application/json' },
     signal: controller.signal
   })
