@@ -18,17 +18,22 @@ app.add_middleware(
 
 class Query(BaseModel):
     message: str
+    options: dict = {}
 
 @app.post("/chat")
 async def chat(query: Query):
-    result = agent_respond(query.message)
+    result = agent_respond(query.message, options=query.options)
     return {"result": result}
 
 
 @app.post("/chat/stream")
 async def chat_stream(query: Query):
+    deep_thinking = query.options.get("deep_thinking", False)
     def event_stream():
-        for entry in agent_respond_stream(query.message):
+        for entry in agent_respond_stream(query.message, deep_thinking=deep_thinking):
+            # 实时打印最终回复内容到后端终端
+            if entry.get("type") == "chat":
+                print(f'[CHATBOT] {entry.get("content")}', flush=True)
             # SSE协议格式，每个消息前加"data: "，后加两个\n
             yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
     return StreamingResponse(event_stream(), media_type="text/event-stream")
