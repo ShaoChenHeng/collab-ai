@@ -6,7 +6,7 @@ from langgraph.prebuilt import tools_condition
 from langgraph.prebuilt import ToolNode
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.messages import AIMessage
-from langgraph.graph.message import add_messages  # 若报错可改为: from langgraph.graph import add_messages
+from langgraph.graph.message import add_messages
 from agent.tools.date.date_tool import today_date, parse_cn_date, date_diff_days, date_diff_hint
 from agent.tools.spider.spider_tool import url_summary
 from agent.tools.web_search.web_search_tool import google_search
@@ -30,12 +30,14 @@ tools = [today_date, google_search, url_summary]
 tool_node = ToolNode(tools)
 
 api_key = os.getenv("DEEPSEEK_API_KEY_FROM_ENV")
-llm = ChatDeepSeek(
+# 无工具方案的关键：保留一个“未绑定工具”的模型实例，用于兜底阶段
+llm_base = ChatDeepSeek(
     api_base="https://api.deepseek.com",  # 或 https://api.deepseek.com/v1
     api_key=api_key,
     model="deepseek-chat",
-).bind_tools(tools)
-
+)
+llm = llm_base.bind_tools(tools)   # 常规使用：允许工具
+llm_no_tools = llm_base            # 兜底使用：禁止工具（模型不会再产出 tool_calls）
 sys_msg = SystemMessage(content=
 """
 你是一个智能检索助手，必须严格遵守以下操作规则：
@@ -68,7 +70,17 @@ sys_msg = SystemMessage(content=
 1. 如果本次回答使用了google_search或url_summary工具，必须在回答中包含相关链接。
 """
 )
-
+sys_msg_no_tools = SystemMessage(content=
+"""
+你现在处于兜底阶段，禁止调用任何工具（包括 today_date、google_search、url_summary）。
+要求：
+- 不要输出任何“工具调用格式”或函数调用标记（例如 <｜tool▁calls▁begin｜>…）
+- 不要提出“让我去打开/访问/调用工具”的建议
+- 只能基于当前对话中的可见信息进行总结与回答
+- 如果信息不足，请直接说明“由于无法继续检索，无法进一步确认”，并给出你能提供的建议或让用户澄清
+- 输出必须是纯文本自然语言，直接给出结论/要点，而不是操作计划
+"""
+)
 # --------------------------
 # 规划状态辅助
 # --------------------------
@@ -82,18 +94,148 @@ def ensure_planning_state(state: AgentState) -> Dict[str, Any]:
         pl["tried_urls"] = []
     if "enable" not in pl:
         pl["enable"] = False
+    # 记录无效的tool_call_id，避免重复调用或被模型看到
+    if "invalid_tool_call_ids" not in pl:
+        pl["invalid_tool_call_ids"] = []
+    # 兜底状态：进入后切换到无工具模型，防止后续继续发工具
+    if "exhausted" not in pl:
+        pl["exhausted"] = False
     return pl
 
 def reset_planning(pl: Dict[str, Any]) -> Dict[str, Any]:
     pl["tried_count"] = 0
     pl["tried_urls"] = []
+    # 不清空 invalid_tool_call_ids 与 exhausted/enable，由调用处按需控制
     return pl
+
+# --------------------------
+# 过滤掉 messages 中无效/不需要的 ToolMessage 和其触发的 AIMessage
+# --------------------------
+def filter_messages_for_prompt(messages: List[Any], pl: Dict[str, Any]) -> List[Any]:
+    invalid_ids = set(pl.get("invalid_tool_call_ids", []))
+    exhausted = bool(pl.get("exhausted"))
+    filtered = []
+    for msg in messages:
+        # 过滤 ToolMessage
+        if hasattr(msg, "type") and msg.type == "tool":
+            tname = getattr(msg, "name", "")
+            tid = getattr(msg, "tool_call_id", None)
+            # 兜底阶段：直接屏蔽所有 url_summary 的工具结果，避免对话被错误摘要污染
+            if exhausted and tname == "url_summary":
+                continue
+            # 常规：屏蔽已标记无效的 tool_call_id
+            if tid in invalid_ids:
+                continue
+
+        # 过滤触发工具的 AIMessage
+        if isinstance(msg, AIMessage):
+            tool_calls = None
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                tool_calls = msg.tool_calls
+            elif hasattr(msg, "additional_kwargs") and "tool_calls" in msg.additional_kwargs:
+                tool_calls = msg.additional_kwargs["tool_calls"]
+
+            if tool_calls:
+                # 兜底阶段：凡包含 url_summary 的调用，直接过滤
+                if exhausted and any(
+                    ((tc.get("function") or {}).get("name") == "url_summary")
+                    for tc in tool_calls
+                ):
+                    continue
+                # 常规：若任一调用 id 在 invalid 列表，则过滤该条 AIMessage
+                if any(tc.get("id") in invalid_ids for tc in tool_calls):
+                    continue
+
+        filtered.append(msg)
+    return filtered
+
+def _pretty_messages(msgs: List[Any]) -> List[Dict[str, Any]]:
+    out = []
+    for i, m in enumerate(msgs):
+        row = {"idx": i, "py_type": type(m).__name__}
+        if isinstance(m, tuple) and m[0] == "user":
+            row.update({"kind": "user", "content": (m[1] if isinstance(m[1], str) else str(m[1]))[:80]})
+        elif hasattr(m, "type") and getattr(m, "type", None) == "tool":
+            row.update({
+                "kind": "tool",
+                "name": getattr(m, "name", ""),
+                "tool_call_id": getattr(m, "tool_call_id", None)
+            })
+        elif isinstance(m, AIMessage):
+            tool_calls = None
+            if hasattr(m, "tool_calls") and m.tool_calls:
+                tool_calls = m.tool_calls
+            elif hasattr(m, "additional_kwargs") and "tool_calls" in m.additional_kwargs:
+                tool_calls = m.additional_kwargs["tool_calls"]
+            row.update({
+                "kind": "ai",
+                "has_tool_calls": bool(tool_calls),
+                "tool_call_ids": [tc.get("id") for tc in tool_calls] if tool_calls else []
+            })
+        else:
+            row.update({"kind": "other"})
+        out.append(row)
+    return out
+
+def _removed_tool_call_ids(before: List[Any], after: List[Any]) -> List[str]:
+    def collect_ids(ms):
+        ids = set()
+        for m in ms:
+            if hasattr(m, "type") and getattr(m, "type", None) == "tool":
+                if getattr(m, "tool_call_id", None):
+                    ids.add(getattr(m, "tool_call_id"))
+            if isinstance(m, AIMessage):
+                tool_calls = None
+                if hasattr(m, "tool_calls") and m.tool_calls:
+                    tool_calls = m.tool_calls
+                elif hasattr(m, "additional_kwargs") and "tool_calls" in m.additional_kwargs:
+                    tool_calls = m.additional_kwargs["tool_calls"]
+                if tool_calls:
+                    for tc in tool_calls:
+                        if tc.get("id"):
+                            ids.add(tc["id"])
+        return ids
+    return sorted(list(collect_ids(before) - collect_ids(after)))
 
 # --------------------------
 # chatbot 节点
 # --------------------------
+
 def chatbot(state: AgentState):
-    return {"messages": [llm.invoke([sys_msg] + state["messages"])]}
+    pl = ensure_planning_state(state)
+    before = state["messages"]
+    after = filter_messages_for_prompt(before, pl)
+
+    # exhausted=True 时使用无工具模型与无工具系统提示
+    model = llm_no_tools if pl.get("exhausted") else llm
+    sys_used = sys_msg_no_tools if pl.get("exhausted") else sys_msg
+
+    # 调试日志
+    # try:
+    #     import json as _json
+    #     print(f"[chatbot] invalid_tool_call_ids={pl.get('invalid_tool_call_ids')}, exhausted={pl.get('exhausted')}, enable={pl.get('enable')}")
+    #     print(f"[chatbot] before_count={len(before)}, after_count={len(after)}, "
+    #           f"removed_tool_call_ids={_removed_tool_call_ids(before, after)}")
+    #     print("[chatbot] before_summary=", _json.dumps(_pretty_messages(before), ensure_ascii=False, indent=2))
+    #     print("[chatbot] after_summary=", _json.dumps(_pretty_messages(after), ensure_ascii=False, indent=2))
+    # except Exception:
+    #     pass
+
+    reply = model.invoke([sys_used] + after)
+
+    # 无工具模式下：清洗任何“工具标记”文本，避免出现 <｜tool▁calls▁begin｜>… 这样的输出
+    if pl.get("exhausted"):
+        def _strip_tool_markup(s: str) -> str:
+            if not isinstance(s, str):
+                return s
+            return re.sub(r"<｜tool▁calls▁begin｜>.*?<｜tool▁calls▁end｜>", "", s, flags=re.DOTALL).strip()
+
+        cleaned = _strip_tool_markup(getattr(reply, "content", str(reply)))
+        cleaned = cleaned or "当前无法继续调用工具检索，我将基于已知信息作答。如需我继续搜索，请重新提问或允许继续检索。"
+        # 确保不携带 tool_calls
+        reply = AIMessage(content=cleaned)
+
+    return {"messages": [reply]}
 
 # --------------------------
 # planning 节点类
@@ -155,11 +297,12 @@ class PlanningNode:
             return None, None, None
         target_tool_calls = None
         for msg in reversed(messages):
-            if hasattr(msg, "tool_calls"):
+            tool_calls = None
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
                 tool_calls = msg.tool_calls
-            elif isinstance(msg, dict) and "tool_calls" in msg:
-                tool_calls = msg["tool_calls"]
-            else:
+            elif hasattr(msg, "additional_kwargs") and "tool_calls" in msg.additional_kwargs:
+                tool_calls = msg.additional_kwargs["tool_calls"]
+            if not tool_calls:
                 continue
             if any(tc.get("id") == tool_call_id for tc in tool_calls):
                 target_tool_calls = tool_calls
@@ -168,7 +311,19 @@ class PlanningNode:
             return content, None, tool_call_id
         for item in target_tool_calls:
             if item.get("id") == tool_call_id:
-                url = item.get("args", {}).get("url", None)
+                fn = item.get("function", {}) or {}
+                args_raw = fn.get("arguments")
+                url = None
+                if isinstance(args_raw, str):
+                    try:
+                        args = json.loads(args_raw)
+                        url = args.get("url")
+                    except Exception:
+                        url = None
+                elif isinstance(args_raw, dict):
+                    url = args_raw.get("url")
+                else:
+                    url = (item.get("args") or {}).get("url")
                 return content, url, tool_call_id
         return content, None, tool_call_id
 
@@ -271,21 +426,10 @@ class PlanningNode:
             choose_index = untried[0][0]
         return choose_index
 
-    # ---- 内部辅助：消息编辑 ----
+    # ---- 内部辅助：消息编辑
     @staticmethod
     def _remove_url_summary_by_id(messages: List[Any], target_id: str) -> List[Any]:
-        new_messages = []
-        for msg in messages:
-            if hasattr(msg, "tool_call_id") and getattr(msg, "tool_call_id", None) == target_id:
-                continue
-            if hasattr(msg, "additional_kwargs") and "tool_calls" in msg.additional_kwargs:
-                if any(tc.get("id") == target_id for tc in msg.additional_kwargs["tool_calls"]):
-                    continue
-            if hasattr(msg, "tool_calls"):
-                if any(tc.get("id") == target_id for tc in getattr(msg, "tool_calls", [])):
-                    continue
-            new_messages.append(msg)
-        return new_messages
+        return messages
 
     @staticmethod
     def _mark_unselectable(search_results: List[Dict[str, Any]], url: str):
@@ -299,9 +443,16 @@ class PlanningNode:
         messages = state["messages"]
         pl = ensure_planning_state(state)
 
+        # 若已耗尽，直接进入 chatbot（兜底，防止循环）
+        if pl.get("exhausted"):
+            return {"next": "chatbot", "planning": pl}
+
         if self._should_judge(messages):
             user_question = self._get_user_question(messages)
             url_summary_results, url, tool_call_id = self._get_url_summary(messages)
+            print("url=", url)
+            print("tool_call_id=", tool_call_id)
+
             search_results = self._get_search_results(messages, "google_search")
             today_str = self.date_tool.invoke({})
 
@@ -317,72 +468,85 @@ class PlanningNode:
 
             is_satisfied, reason = self._judge_content(user_question, url_summary_dict, today_str)
             print(f"[planning] judge_content结果: is_satisfied={is_satisfied}, reason={reason}")
-
             if is_satisfied:
                 next_node = "chatbot"
                 pl = reset_planning(pl)
             else:
+                # 记录无效的 url_summary 调用，供 chatbot 过滤
+                if tool_call_id and tool_call_id not in pl["invalid_tool_call_ids"]:
+                    pl["invalid_tool_call_ids"].append(tool_call_id)
+                    print(f"[planning] 标记无效 tool_call_id={tool_call_id}")
+
                 if url:
-                    pl["tried_urls"].append(url)
+                    if url not in pl["tried_urls"]:
+                        pl["tried_urls"].append(url)
                     search_results = self._mark_unselectable(search_results, url)
-                messages = self._remove_url_summary_by_id(messages, tool_call_id)
+
+                # 兜底1：达到最大重选次数 -> 停止 planning，进入 chatbot（避免无限循环）
                 if pl["tried_count"] >= pl["max_retry"]:
-                    print(f"[planning] 已达到最大重选次数({pl['max_retry']})，不再重选，进入chatbot")
-                    pl = reset_planning(pl)
+                    print(f"[planning] 已达到最大重选次数({pl['max_retry']})，停止重选，进入chatbot（无工具）")
+                    pl["exhausted"] = True
+                    pl["enable"] = False
                     next_node = "chatbot"
-                else:
-                    print("[planning] 匹配不合适，准备重选")
-                    if search_results and len(search_results) > 0:
-                        choose_index = self._llm_select_next_url(
-                            user_question=user_question,
-                            search_results=search_results,
-                            tried_urls=pl["tried_urls"],
-                            date=today_str,
-                        )
-                        if choose_index == -1:
-                            print("[planning] LLM判定没有合适链接，进入chatbot")
-                            pl = reset_planning(pl)
-                            next_node = "chatbot"
-                        else:
-                            next_url = search_results[choose_index].get("link")
-                            print(f"[planning] LLM选择第{choose_index}个google_search结果: {next_url}")
-                            tool_call_id = f"call_{uuid.uuid4()}"
-                            messages.append(
-                                AIMessage(
-                                    content='',
-                                    additional_kwargs={
-                                        "tool_calls": [
-                                            {
-                                                "id": tool_call_id,
-                                                "function": {
-                                                    "name": "url_summary",
-                                                    "arguments": json.dumps({"url": next_url}, ensure_ascii=False),
-                                                },
-                                                "type": "function",
-                                                "index": 0,
-                                            }
-                                        ],
-                                        "refusal": None
-                                    }
-                                )
-                            )
-                            pl["tried_count"] += 1
-                            next_node = "tools"
-                    else:
-                        print("[planning] google_search结果不足，无法重试，进入chatbot")
-                        pl = reset_planning(pl)
-                        next_node = "chatbot"
+                    return {"next": next_node, "planning": pl}
+
+                # 兜底2：无可选搜索结果 -> 停止 planning
+                if not search_results:
+                    print("[planning] 无可用搜索结果，停止重选，进入chatbot（无工具）")
+                    pl["exhausted"] = True
+                    pl["enable"] = False
+                    next_node = "chatbot"
+                    return {"next": next_node, "planning": pl}
+
+                choose_index = self._llm_select_next_url(
+                    user_question=user_question,
+                    search_results=search_results,
+                    tried_urls=pl["tried_urls"],
+                    date=today_str,
+                )
+                if choose_index == -1:
+                    print("[planning] LLM判定没有合适链接，停止重选，进入chatbot（无工具）")
+                    pl["exhausted"] = True
+                    pl["enable"] = False
+                    next_node = "chatbot"
+                    return {"next": next_node, "planning": pl}
+
+                # 正常重选：触发新的 url_summary（仅返回增量消息，避免重复追加）
+                next_url = search_results[choose_index].get("link")
+                print(f"[planning] LLM选择第{choose_index}个google_search结果: {next_url}")
+                new_tool_call_id = f"call_{uuid.uuid4()}"
+                new_msg = AIMessage(
+                    content='',
+                    additional_kwargs={
+                        "tool_calls": [
+                            {
+                                "id": new_tool_call_id,
+                                "function": {
+                                    "name": "url_summary",
+                                    "arguments": json.dumps({"url": next_url}, ensure_ascii=False),
+                                },
+                                "type": "function",
+                                "index": 0,
+                            }
+                        ],
+                        "refusal": None
+                    }
+                )
+                pl["tried_count"] += 1
+                next_node = "tools"
+                return {"next": next_node, "messages": [new_msg], "planning": pl}
         else:
             next_node = "chatbot"
 
-        return {"next": next_node, "messages": messages, "planning": pl}
+        # 其余路径不返回 messages，避免重复追加
+        return {"next": next_node, "planning": pl}
 
 # --------------------------
 # select 节点
 # --------------------------
 def select(state: AgentState):
     pl = ensure_planning_state(state)
-    next_node = "planning" if pl.get("enable") else "chatbot"
+    next_node = "planning" if pl.get("enable") and not pl.get("exhausted") else "chatbot"
     return {"next": next_node, "planning": pl}
 
 # --------------------------
@@ -415,9 +579,16 @@ def agent_respond(user_input: str, options=None) -> str:
     """
     核心对话接口，自动维护多轮历史（基于 MemorySaver 的 thread_id）
     """
+    enable_planning = bool(options.get("enable_planning")) if isinstance(options, dict) else False
     init_state: AgentState = {
         "messages": [("user", user_input)],
-        "planning": {"enable": False}
+        "planning": {
+            "enable": enable_planning,
+            "exhausted": False,
+            "tried_count": 0,
+            "tried_urls": [],
+            "invalid_tool_call_ids": []
+        }
     }
     response = ""
     for event in graph.stream(init_state, config):
@@ -440,12 +611,16 @@ def get_tool_query(tool_msg):
     if not hasattr(tool_msg, "tool_calls") or not tool_msg.tool_calls:
         return None
     tc = tool_msg.tool_calls[0]
-    args = tc.get("args", {})
-    if isinstance(args, str):
+    fn = tc.get("function", {}) or {}
+    args_raw = fn.get("arguments")
+    args = {}
+    if isinstance(args_raw, str):
         try:
-            args = json.loads(args)
+            args = json.loads(args_raw)
         except Exception:
             args = {}
+    elif isinstance(args_raw, dict):
+        args = args_raw
     print("[query]", args.get("query"))
     return args.get("query")
 
@@ -455,7 +630,13 @@ def agent_respond_stream(user_input: str, deep_thinking: bool = False):
     """
     init_state: AgentState = {
         "messages": [("user", user_input)],
-        "planning": {"enable": deep_thinking}
+        "planning": {
+            "enable": deep_thinking,
+            "exhausted": False,
+            "tried_count": 0,
+            "tried_urls": [],
+            "invalid_tool_call_ids": []
+        }
     }
     for event in graph.stream(init_state, config):
         for node, value in event.items():
