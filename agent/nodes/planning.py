@@ -5,6 +5,21 @@ from typing import Any, Dict, List
 from langchain_core.messages import AIMessage
 from agent.tools.date.date_tool import date_diff_days, date_diff_hint
 
+# ----------------------------------------------------------------------
+# planning 节点简介
+# - 该节点在“深度思考模式”下启用，用于在已获得网页摘要（url_summary）后进行判定与重选：
+#   1) 判断当前摘要是否对用户问题有用且时间概念一致（结合 today_date 结果与搜索结果中的日期）。
+#   2) 若无用：将对应的 tool_call_id 加入 planning.invalid_tool_call_ids（便于上游过滤），
+#      记录已尝试链接 tried_urls，并从 google_search 的结果中选择下一个候选链接继续摘要（触发新的 url_summary 调用）。
+#   3) 控制尝试次数：超过 max_retry 或没有可选项时，设置 exhausted=True 并关闭 enable，
+#      图将回到 chatbot 且切换为“无工具兜底”模型，由助手基于已有上下文直接给出结论。
+# - 节点不直接执行工具；它返回一条仅包含 url_summary 工具调用的 AIMessage 作为“意图”，
+#   真正执行仍由 ToolNode 完成，确保“计划（选择链接）”与“执行（调用工具）”解耦。
+# - 输入/输出：
+#   输入：state.messages（包含 user/ai/tool 轨迹）、state.planning（enable/max_retry/tried_urls/invalid_tool_call_ids/exhausted 等）
+#   输出：{"next": tools|chatbot|planning, "messages": [AIMessage with tool_calls?], "planning": updated_pl}
+# ----------------------------------------------------------------------
+
 # --------------------------
 # 规划状态辅助
 # --------------------------
