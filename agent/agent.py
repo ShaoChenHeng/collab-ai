@@ -10,8 +10,10 @@ from langgraph.graph.message import add_messages
 from agent.tools.date.date_tool import today_date
 from agent.tools.spider.spider_tool import url_summary
 from agent.tools.web_search.web_search_tool import google_search
+from agent.tools.docs.docs_tool import docs_use
 import os, json, re
 from agent.nodes.planning import PlanningNode, ensure_planning_state
+
 
 # --------------------------
 # State 定义
@@ -262,7 +264,7 @@ def agent_respond_stream(user_input: str, deep_thinking: bool = False):
 # --------------------------
 # 工具与模型
 # --------------------------
-tools = [today_date, google_search, url_summary]
+tools = [today_date, google_search, url_summary, docs_use]
 tool_node = ToolNode(tools)
 
 api_key = os.getenv("DEEPSEEK_API_KEY_FROM_ENV")
@@ -297,6 +299,28 @@ sys_msg = SystemMessage(content=
 2. 一次只选择一个链接进行url_summary，避免同时调用多个链接
 3. 从google_search的搜索结果中筛选1-3个最相关链接进行url_summary进行更详细的搜索，这能够使回答更详细
 4. 结合从url_summary获取的摘要内容，回答用户问题。
+
+**文件处理规则**
+1. docs_use工具调用时，文件名必须与用户输入完全一致，禁止自动简化、分词、更改或省略文件名中的任何文字。否则会找不到文件导致错误。
+2. 如果文件名很长或包含特殊字符，建议用户直接复制粘贴实际文件名。
+
+**文件处理与长文续读规则（docs_use）**
+1. 首次读取本地文件时，调用 docs_use 工具，参数：
+   - path: 使用用户提供的文件名或路径
+   - max_chars: 默认 4000（可按需要调整）
+   - offset: 0
+   - overlap: 0
+2. 如果工具返回 has_more=true，或用户要求“继续/接着读/下一部分/后续内容”，必须再次调用 docs_use 进行续读：
+   - path: 使用上一次工具返回的 path（不要再用最初的模糊名称）
+   - offset: 使用上一次返回的 next_offset
+   - overlap: 建议 100（用于提供上下文）
+   - max_chars: 维持与上一次一致，除非用户另有要求
+3. 工具返回 JSON 中的关键字段说明：
+   - content: 本次片段文本
+   - has_more: 是否还有剩余内容
+   - next_offset: 下一次续读要传入的 offset
+   - total_chars: 文本总长度（可用于进度提示）
+4. 回答用户时，不要反复返回从开头开始的内容；对长文分段输出时，应告知“已阅读至 X/Y 字符”，并在需要时继续调用工具续读。
 
 **用户指令规则**
 1. 如果用户问题包含类似‘使用网络搜索’的内容，必须使用 google_search 工具进行搜索。
