@@ -129,6 +129,7 @@ def _parse_txt(abs_path: str) -> Dict[str, Any]:
     return {"filetype": "txt", "encoding": encoding, "bytes": size_bytes, "content": text, "pages": None}
 
 def _parse_pdf(abs_path: str) -> Dict[str, Any]:
+    # 仅使用 with 确保资源自动释放；不做缓存/LRU
     try:
         import fitz  # PyMuPDF
     except Exception:
@@ -140,15 +141,27 @@ def _parse_pdf(abs_path: str) -> Dict[str, Any]:
             "pages": None,
             "error": "未安装 PyMuPDF，无法解析 PDF。请 pip install pymupdf 后重试。",
         }
-    doc = fitz.open(abs_path)
-    parts = []
-    for i, page in enumerate(doc):
-        text = page.get_text("text") or ""
-        text = _normalize_text(text)
-        if text:
-            parts.append(f"[Page {i+1}]\n{text}")
+
+    size_bytes = os.path.getsize(abs_path)
+    parts: List[str] = []
+    pages_count = 0
+    # with 语法确保文档句柄在离开块时关闭
+    with fitz.open(abs_path) as doc:
+        pages_count = len(doc)
+        for i, page in enumerate(doc):
+            text = page.get_text("text") or ""
+            text = _normalize_text(text)
+            if text:
+                parts.append(f"[Page {i+1}]\n{text}")
+
     content = "\n\n".join(parts).strip()
-    return {"filetype": "pdf", "encoding": None, "bytes": os.path.getsize(abs_path), "content": content, "pages": len(doc)}
+    return {
+        "filetype": "pdf",
+        "encoding": None,
+        "bytes": size_bytes,
+        "content": content,
+        "pages": pages_count,
+    }
 
 def _parse_by_suffix(abs_path: str) -> Dict[str, Any]:
     ext = Path(abs_path).suffix.lower()
