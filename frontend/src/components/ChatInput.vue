@@ -24,6 +24,21 @@
       </button>
       <div class="btns-spacer"></div>
       <button
+        class="chat-upload-btn"
+        title="上传文件"
+        @click="triggerPickFiles"
+      >
+        <el-icon><Upload /></el-icon>
+      </button>
+      <input
+        ref="fileInputEl"
+        type="file"
+        accept=".txt,application/pdf"
+        multiple
+        style="display:none"
+        @change="onFilesPicked"
+      />
+      <button
         class="chat-send-btn"
         :disabled="!canSend"
         :class="{ disabled: !canSend }"
@@ -38,7 +53,7 @@
 
 <script setup>
 import { ref, watch, nextTick } from 'vue'
-import { Cpu, Search, Promotion } from '@element-plus/icons-vue'
+import { Cpu, Search, Promotion, Upload } from '@element-plus/icons-vue'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -46,7 +61,7 @@ const props = defineProps({
   deepThinking: { type: Boolean, default: false },
   webSearch: { type: Boolean, default: false },
 })
-const emits = defineEmits(['update:modelValue', 'send', 'toggle-web', 'toggle-deep'])
+const emits = defineEmits(['update:modelValue', 'send', 'toggle-web', 'toggle-deep', 'pick-files'])
 
 const localInput = ref(props.modelValue || '')
 watch(() => props.modelValue, v => {
@@ -66,6 +81,19 @@ function autoResize() {
   }
 }
 function onSend() { emits('send') }
+// [MOD] 新增：文件选择逻辑
+const fileInputEl = ref(null)
+function triggerPickFiles() {
+  fileInputEl.value?.click()
+}
+function onFilesPicked(e) {
+  const files = Array.from(e.target?.files || [])
+  if (files.length > 0) {
+    emits('pick-files', files)
+  }
+  // 允许重复选择同一文件
+  e.target.value = ''
+}
 
 defineExpose({ autoResize })
 </script>
@@ -177,5 +205,25 @@ defineExpose({ autoResize })
 }
 .chat-send-btn:disabled:hover,
 .chat-send-btn.disabled:hover { background: #d7dde5; }
+.chat-upload-btn {
+  background: #409eff;
+  color: #fff;
+  border: none;
+  height: 30px;
+  width: 48px;
+  border-radius: 8px;
+  font-size: 22px;
+  cursor: pointer;
+  transition: background 0.2s;
+  align-self: flex-end;
+  margin: 0;
+  padding: 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.chat-upload-btn:hover { background: #1976d2; }
+
 .btns-spacer { flex: 1; }
 </style>
