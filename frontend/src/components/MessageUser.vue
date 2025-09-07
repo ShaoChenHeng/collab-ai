@@ -105,6 +105,7 @@ defineEmits(['copy'])
   border-color: #409eff;   /* 蓝边框 */
   position: relative;      /* 放置内部小圆点 */
   padding-right: 18px;     /* 预留小圆点空间（可按需微调） */
+  margin-right: 10px;      /* 与用户泡泡保持一致的右侧间距 */
 }
 :deep(.file-bubble.sent-variant::after) {
   content: '';
