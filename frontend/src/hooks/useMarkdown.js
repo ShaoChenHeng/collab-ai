@@ -6,7 +6,7 @@ export function useMarkdown() {
     linkify: true,
     breaks: false,
     typographer: false,
-    html: true,
+    html: false,
     xhtmlOut: true
   })
 
