@@ -1,4 +1,3 @@
-// src/api/chat.js
 export async function fetchAgentReply(message, options = {}) {
   try {
     const payload = { message, options }
@@ -18,6 +17,8 @@ export async function fetchAgentReply(message, options = {}) {
     console.error('fetchAgentReply error', e)
     return '网络错误，无法获取AI响应。'
   }
+}
+
 export async function fetchAgentReplyStream(message, options = {}, onData) {
   const controller = new AbortController()
   const payload = { message, options }
