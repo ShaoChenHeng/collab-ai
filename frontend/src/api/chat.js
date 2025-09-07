@@ -18,7 +18,6 @@ export async function fetchAgentReply(message, options = {}) {
     console.error('fetchAgentReply error', e)
     return '网络错误，无法获取AI响应。'
   }
-}
 export async function fetchAgentReplyStream(message, options = {}, onData) {
   const controller = new AbortController()
   const payload = { message, options }
@@ -55,4 +54,26 @@ export async function fetchAgentReplyStream(message, options = {}, onData) {
   }
   // 返回 controller 以便后续中断流式（可选）
   return controller
+}
+
+export async function uploadFile(file) {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  const resp = await fetch('http://localhost:8000/upload', {
+    method: 'POST',
+    body: form
+  })
+  if (!resp.ok) {
+    // 读取后端错误信息（例如 400: 仅支持 txt 或 pdf 文件）
+    let detail = ''
+    try {
+      const err = await resp.json()
+      detail = err?.detail || ''
+    } catch (_) {
+      // eslint-disable-next-line no-empty
+    }
+    throw new Error(detail || '上传失败')
+  }
+  const data = await resp.json()
+  return data
 }
