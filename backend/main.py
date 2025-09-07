@@ -54,8 +54,9 @@ def stream():
 async def upload_file(file: UploadFile = File(...)):
     # 仅允许 txt 与 pdf
     ext = Path(file.filename).suffix.lower()
-    if ext not in {".txt", ".pdf"}:
-        raise HTTPException(status_code=400, detail="仅支持 txt 或 pdf 文件")
+    allowed_exts = {".txt", ".pdf", ".md", ".json", ".docx"}
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail=f"仅支持 {', '.join(allowed_exts)} 文件")
 
     # 清理文件名，防止路径穿越
     clean_name = Path(file.filename).name

@@ -15,10 +15,17 @@ function keyOf(f) {
   return `${f.name}::${f.size || 0}::${f.lastModified || 0}`
 }
 
-// 允许的类型：.txt / .pdf（双重校验：扩展名 + MIME）
+  // 允许的类型：.txt / .pdf / .md / .json / .docx（双重校验：扩展名 + MIME）
 function isAllowedType(f) {
-  const nameOk = /\.txt$/i.test(f.name) || /\.pdf$/i.test(f.name)
-  const typeOk = ['text/plain', 'application/pdf', ''].includes(f.type || '')
+  const nameOk = /\.(txt|pdf|md|json|docx)$/i.test(f.name)
+  const typeOk = [
+    'text/plain',
+    'application/pdf',
+    'text/markdown',
+    'application/json',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '', // 某些浏览器未识别 type
+  ].includes(f.type || '')
   return nameOk && typeOk
 }
 
@@ -49,7 +56,8 @@ export function useFileQueue() {
     toAdd.forEach(it => files.value.push({ id: fileIdSeed++, name: it.file.name, file: it.file }))
 
     // 用户提示（尽量合并，避免打扰）
-    if (invalid.length) ElMessage?.warning?.(`仅支持 .txt 或 .pdf，已忽略：${invalid.join('、')}`)
+    if (invalid.length) ElMessage?.warning?.(`仅支持 .txt、.pdf、.md、.json、.docx，已忽略：${invalid.join('、')}`)
+    // ...
     if (oversize.length) ElMessage?.warning?.(`超过 20MB 已忽略：${oversize.join('、')}`)
     if (dups.length) ElMessage?.info?.(`已忽略重复文件：${dups.join('、')}`)
     if (reachedLimit) ElMessage?.warning?.(`最多上传 ${MAX_FILES} 个文件，已达上限`)

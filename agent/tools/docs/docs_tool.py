@@ -3,6 +3,7 @@ import os
 import re
 import json
 import difflib
+import json as _json
 from pathlib import Path
 from typing import Tuple, Dict, Any, List, Optional
 from langchain_core.tools import tool
@@ -163,12 +164,74 @@ def _parse_pdf(abs_path: str) -> Dict[str, Any]:
         "pages": pages_count,
     }
 
-def _parse_by_suffix(abs_path: str) -> Dict[str, Any]:
+def _parse_md(abs_path: str) -> dict:
+    with open(abs_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    return {
+        "filetype": "md",
+        "encoding": "utf-8",
+        "bytes": os.path.getsize(abs_path),
+        "content": text,
+        "pages": None
+    }
+
+def _parse_json(abs_path: str) -> dict:
+    with open(abs_path, "r", encoding="utf-8") as f:
+        try:
+            obj = _json.load(f)
+            pretty = _json.dumps(obj, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return {
+                "filetype": "json",
+                "encoding": "utf-8",
+                "bytes": os.path.getsize(abs_path),
+                "content": "",
+                "pages": None,
+                "error": f"解析JSON失败: {e}"
+            }
+    return {
+        "filetype": "json",
+        "encoding": "utf-8",
+        "bytes": os.path.getsize(abs_path),
+        "content": pretty,
+        "pages": None
+    }
+
+def _parse_docx(abs_path: str) -> dict:
+    try:
+        from docx import Document
+    except ImportError:
+        return {
+            "filetype": "docx",
+            "encoding": None,
+            "bytes": os.path.getsize(abs_path),
+            "content": "",
+            "pages": None,
+            "error": "未安装 python-docx，无法解析 docx。请 pip install python-docx"
+        }
+    doc = Document(abs_path)
+    paras = [p.text for p in doc.paragraphs if p.text.strip()]
+    content = "\n".join(paras)
+    return {
+        "filetype": "docx",
+        "encoding": None,
+        "bytes": os.path.getsize(abs_path),
+        "content": content,
+        "pages": None
+    }
+
+def _parse_by_suffix(abs_path: str) -> dict:
     ext = Path(abs_path).suffix.lower()
     if ext == ".txt":
         return _parse_txt(abs_path)
     elif ext == ".pdf":
         return _parse_pdf(abs_path)
+    elif ext == ".md":
+        return _parse_md(abs_path)
+    elif ext == ".json":
+        return _parse_json(abs_path)
+    elif ext == ".docx":
+        return _parse_docx(abs_path)
     else:
         return {
             "filetype": ext.lstrip(".") or "unknown",
@@ -176,7 +239,7 @@ def _parse_by_suffix(abs_path: str) -> Dict[str, Any]:
             "bytes": os.path.getsize(abs_path),
             "content": "",
             "pages": None,
-            "error": f"暂不支持该文件类型: {ext}",
+            "error": f"暂不支持该文件类型: {ext}"
         }
 
 # --------------------------

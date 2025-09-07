@@ -33,7 +33,11 @@
       <input
         ref="fileInputEl"
         type="file"
-        accept=".txt,application/pdf"
+        accept="
+             .txt, .pdf,
+             .md, .json,
+             .docx
+        "
         multiple
         style="display:none"
         @change="onFilesPicked"
