@@ -1,11 +1,12 @@
 const { defineConfig } = require('@vue/cli-service')
-module.exports = {
+
+module.exports = defineConfig({
   devServer: {
     proxy: {
-      '/chat': {
-        target: 'http://localhost:8000', // 你的后端地址
+      '^/(chat|upload)': {
+        target: 'http://localhost:8000',
         changeOrigin: true,
-      }
-    }
-  }
-}
+      },
+    },
+  },
+})
