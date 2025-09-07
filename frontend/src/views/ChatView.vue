@@ -34,7 +34,7 @@
       />
       <!-- AI 免责声明 -->
       <div class="ai-disclaimer">
-        内容由 AI 生成，请仔细甄别
+        {{ aiDisclaimer }}
       </div>
     </div>
     <!-- 侧边栏：网页链接面板 -->
@@ -49,8 +49,7 @@
 </template>
 
 <script setup>
-
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { fetchAgentReplyStream, uploadFile } from '@/api/chat.js'
 
 import WebLinksPanel from '@/components/WebLinksPanel.vue'
@@ -63,6 +62,7 @@ import { useFileQueue } from '@/hooks/useFileQueue.js'
 import { useChatMessages } from '@/hooks/useChatMessages.js'
 import { useAgentStream } from '@/hooks/useAgentStream.js'
 import { useMarkdown } from '@/hooks/useMarkdown.js'
+import { useSendMessage } from '@/hooks/useSendMessage.js'
 
 // 基本输入/开关
 const input = ref('')
@@ -85,93 +85,37 @@ const {
 } = useWebLinksPanel(messages)
 const { sendWithStream } = useAgentStream({ messages, pushAgentPlaceholder, setWebLinksToMsg, fetchAgentReplyStream })
 
-// 初始欢迎消息
-messages.value.push({ id: 'msg_welcome', from: 'agent', text: '你好！我是AI助手，有什么可以帮你的吗？', copied: false, isLoading: false })
+// AI 免责声明仅渲染
+const aiDisclaimer = '内容由 AI 生成，请仔细甄别'
 
-const chatInputRef = ref(null)
-const canSend = computed(() =>
-  (input.value.trim().length > 0 || fileItems.value.length > 0) && !isAgentLoading.value
+// 初始欢迎消息
+messages.value.push({
+  id: 'msg_welcome',
+  from: 'agent',
+  text: '你好！我是AI助手，有什么可以帮你的吗？',
+  copied: false,
+  isLoading: false }
 )
 
-function prepareUserText(text, webFlag) {
-  return webFlag && text ? '请你网络搜索相关关键字后回答：' + text : text
-}
+const chatInputRef = ref(null)
 
-// 依模板构造含 docs_use 指令的真实提示（发给后端）
-function buildDocsPrompt(userText, paths) {
-  const header = '我已在工作区上传了以下文件（相对路径）：\n' + paths.map(p => `- ${p}`).join('\n')
-  if (userText && userText.trim()) {
-    return `${header}\n请在需要时使用 docs_use 工具读取上述文件，并结合其内容回答我的问题：\n${userText}`
-  }
-  return `${header}\n请使用 docs_use 工具依次读取这些文件，先给出一个中文概览与要点提要；如内容较长可按需多次调用 docs_use 续读。`
-}
+// 使用抽象后的发送逻辑
+const { sendMessage, canSend } = useSendMessage({
+  input,
+  fileItems,
+  takeAttachments,
+  pushUserMessage,
+  uploadFile,
+  sendWithStream,
+  useWebSearch,
+  useDeepThinking,
+  chatInputRef,
+  isAgentLoading,
+})
 
 function onCopy({ msg, idx }) { copyToClipboard(msg, idx) }
 function toggleWebSearch() { useWebSearch.value = !useWebSearch.value }
 function toggleDeepThinking() { useDeepThinking.value = !useDeepThinking.value }
-// 顺序上传全部附件；任一失败抛错
-async function uploadAllOrFail(attachments) {
-  for (const f of attachments) {
-    const resp = await uploadFile(f.file)
-    f.serverFilename = resp.filename
-    f.serverPath = resp.path
-  }
-  return attachments
-}
-
-/* 核心函数
-   发送消息（文本 + 附件）*/
-async function sendMessage(e) {
-  e?.preventDefault?.()
-  const textRaw = input.value.trim()
-  const hasText = !!textRaw
-  const hasFiles = fileItems.value.length > 0
-  if ((!hasText && !hasFiles) || !canSend.value) return
-
-  // 是否启用网页搜索
-  const webFlag = useWebSearch.value
-
-  // 取出并清空待发送附件；用户消息入队（展示端）
-  const attachments = takeAttachments()
-  input.value = ''
-  chatInputRef.value?.autoResize?.()
-
-  // 如有附件：先上传；失败则终止，不发消息
-  if (attachments.length > 0) {
-    try {
-      await uploadAllOrFail(attachments)
-    } catch (err) {
-      console.error('上传失败：', err)
-      return
-    }
-  }
-
-  // 入队用户侧消息（展示端）
-  if (hasText) {
-    // 有输入 + 可有文件：显示文字泡泡 + 文件泡泡
-    pushUserMessage({ text: textRaw, files: attachments })
-  } else if (attachments.length > 0) {
-    // 无输入 + 有文件：仅显示文件泡泡（组件在 text 为空时隐藏文字泡泡）
-    pushUserMessage({ text: '', files: attachments })
-  }
-
-  // 构造最终发给后端的 message
-  const serverPaths = attachments.map(a => a.serverPath).filter(Boolean)
-  let messageToSend
-  if (serverPaths.length > 0) {
-    const prepared = prepareUserText(textRaw, webFlag)
-    messageToSend = buildDocsPrompt(prepared, serverPaths)
-  } else {
-    // 无文件：沿用原逻辑
-    messageToSend = prepareUserText(textRaw, webFlag)
-  }
-
-  // 开关复位
-  if (webFlag) useWebSearch.value = false
-
-  // 流式 Agent 回复（webSearch 使用本次快照）
-  sendWithStream(messageToSend, { deepThinking: useDeepThinking.value, webSearch: webFlag })
-}
 </script>
 
 <style scoped>
