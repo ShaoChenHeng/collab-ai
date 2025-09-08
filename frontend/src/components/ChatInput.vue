@@ -18,7 +18,11 @@
         <el-icon class="btn-icon"><Cpu /></el-icon>
         <span class="btn-text">深度思考</span>
       </button>
-      <button class="input-btn" :class="{ active: webSearch }" @click="$emit('toggle-web')">
+      <button
+        class="input-btn"
+        :class="webSearchBtnClass()"
+        @click="$emit('toggle-web')"
+        :title="webSearchBtnTooltip()">
         <el-icon class="btn-icon"><Search /></el-icon>
         <span class="btn-text">网络搜索</span>
       </button>
@@ -63,7 +67,7 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   canSend: { type: Boolean, default: false },
   deepThinking: { type: Boolean, default: false },
-  webSearch: { type: Boolean, default: false },
+  webSearchMode: { type: String, default: 'auto' }
 })
 const emits = defineEmits(['update:modelValue', 'send', 'toggle-web', 'toggle-deep', 'pick-files'])
 
@@ -78,6 +82,16 @@ watch(localInput, v => emits('update:modelValue', v))
 
 const textareaEl = ref(null)
 const focused = ref(false)
+function webSearchBtnClass() {
+  if (props.webSearchMode === 'on') return 'active'
+  if (props.webSearchMode === 'off') return 'forbid'
+  return ''
+}
+function webSearchBtnTooltip() {
+  if (props.webSearchMode === 'on') return '强制开启网络搜索'
+  if (props.webSearchMode === 'off') return '已禁用网络搜索'
+  return '自动网络搜索'
+}
 function autoResize() {
   if (textareaEl.value) {
     textareaEl.value.style.height = 'auto'
@@ -175,9 +189,25 @@ defineExpose({ autoResize })
   margin: 0;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
 }
+.input-btn.forbid {
+  background: #F6575F;
+  color: #fff;
+}
+.input-btn.forbid .btn-icon { color: #fff; }
 .input-btn:hover { background: #f2f6fc; }
-.input-btn.active { background: #409eff; color: #fff; }
+.input-btn.active {
+  background: #409eff;
+  color: #fff;
+}
 .input-btn.active .btn-icon { color: #fff; }
+.input-btn.active:hover {
+  background: #73b8ff;
+  color: #fff;
+}
+.input-btn.forbid:hover {
+  background: #fa8c92;
+  color: #fff;
+}
 .btn-icon { font-size: 15px; display: flex; align-items: center; }
 .btn-text { margin-left: 7px; font-size: 13px; }
 .chat-send-btn {

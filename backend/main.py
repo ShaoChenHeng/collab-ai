@@ -32,8 +32,13 @@ async def chat(query: Query):
 @app.post("/chat/stream")
 async def chat_stream(query: Query):
     deep_thinking = query.options.get("deep_thinking", False)
+    web_search_mode = query.options.get("webSearchMode", "auto")
     def event_stream():
-        for entry in agent_respond_stream(query.message, deep_thinking=deep_thinking):
+        for entry in agent_respond_stream(
+                query.message,
+                deep_thinking=deep_thinking,
+                web_search_mode=web_search_mode
+        ):
             # 实时打印最终回复内容到后端终端
             if entry.get("type") == "chat":
                 print(f'[CHATBOT] {entry.get("content")}', flush=True)

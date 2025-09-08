@@ -7,14 +7,17 @@ export function useSendMessage({
   pushUserMessage,
   uploadFile,
   sendWithStream,
-  useWebSearch,
+  webSearchMode,
   useDeepThinking,
   chatInputRef,
   isAgentLoading
 }) {
   // 用户输入预处理
-  function prepareUserText(text, webFlag) {
-    return webFlag && text ? '请你网络搜索相关关键字后回答：' + text : text
+  function prepareUserText(text, webFlag, webSearchMode) {
+    if (webSearchMode === 'off' && text) {
+    return '本次对话禁止使用网络搜索。' + text
+  }
+  return webFlag && text ? '请你网络搜索相关关键字后回答：' + text : text
   }
 
   // 构造 docs_use 指令 prompt
@@ -49,8 +52,8 @@ export function useSendMessage({
     const hasFiles = fileItems.value.length > 0
     if ((!hasText && !hasFiles) || !canSend.value) return
 
-    // 是否启用网页搜索
-    const webFlag = useWebSearch.value
+    // 是否启用网页搜索（只在on时强制提示，auto和off不提示）
+    const webFlag = webSearchMode.value === 'on'
 
     // 取出并清空待发送附件；用户消息入队（展示端）
     const attachments = takeAttachments()
@@ -80,18 +83,18 @@ export function useSendMessage({
     const serverPaths = attachments.map(a => a.serverPath).filter(Boolean)
     let messageToSend
     if (serverPaths.length > 0) {
-      const prepared = prepareUserText(textRaw, webFlag)
+      const prepared = prepareUserText(textRaw, webFlag, webSearchMode.value)
       messageToSend = buildDocsPrompt(prepared, serverPaths)
     } else {
       // 无文件：沿用原逻辑
-      messageToSend = prepareUserText(textRaw, webFlag)
+      messageToSend = prepareUserText(textRaw, webFlag, webSearchMode.value)
     }
 
-    // 开关复位
-    if (webFlag) useWebSearch.value = false
-
     // 流式 Agent 回复
-    sendWithStream(messageToSend, { deepThinking: useDeepThinking.value, webSearch: webFlag })
+    sendWithStream(messageToSend, {
+      deepThinking: useDeepThinking.value,
+      webSearchMode: webSearchMode.value // 用新的三态变量
+    })
   }
 
   return {

@@ -215,7 +215,9 @@ def get_tool_query(tool_msg):
     print("[query]", args.get("query"))
     return args.get("query")
 
-def agent_respond_stream(user_input: str, deep_thinking: bool = False):
+def agent_respond_stream(user_input: str,
+                         deep_thinking: bool = False,
+                         web_search_mode: str = "auto"):
     """
     启用 deep_thinking=True 时，会在本轮对话内开启 planning 节点。
     """

@@ -26,9 +26,9 @@
         v-model="input"
         :can-send="canSend"
         :deep-thinking="useDeepThinking"
-        :web-search="useWebSearch"
+        :web-search-mode="webSearchMode"
         @send="sendMessage"
-        @toggle-web="toggleWebSearch"
+        @toggle-web="toggleWebSearchMode"
         @toggle-deep="toggleDeepThinking"
         @pick-files="onPickFiles"
       />
@@ -66,8 +66,9 @@ import { useSendMessage } from '@/hooks/useSendMessage.js'
 
 // 基本输入/开关
 const input = ref('')
-const useWebSearch = ref(false)
 const useDeepThinking = ref(false)
+const webSearchMode = ref('auto') // auto/on/close
+
 // 文件队列（选择、去重、校验、移除、取出发送）
 const { files: fileItems, onPickFiles, removeFileItem, takeAttachments } = useFileQueue()
 // 聊天消息（列表、加载状态、思考展开、添加用户消息、添加AI占位、切换思考、复制）
@@ -107,14 +108,18 @@ const { sendMessage, canSend } = useSendMessage({
   pushUserMessage,
   uploadFile,
   sendWithStream,
-  useWebSearch,
+  webSearchMode,
   useDeepThinking,
   chatInputRef,
   isAgentLoading,
 })
 
 function onCopy({ msg, idx }) { copyToClipboard(msg, idx) }
-function toggleWebSearch() { useWebSearch.value = !useWebSearch.value }
+function toggleWebSearchMode() {
+  if (webSearchMode.value === 'auto') webSearchMode.value = 'on'
+  else if (webSearchMode.value === 'on') webSearchMode.value = 'off'
+  else webSearchMode.value = 'auto'
+}
 function toggleDeepThinking() { useDeepThinking.value = !useDeepThinking.value }
 </script>
 
